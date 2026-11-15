@@ -1,0 +1,22 @@
+{
+  "title": "Put a wound-drain bulb back on suction: squeeze it flat and cap it while it is still flat",
+  "category": "Impact on jobs",
+  "keywords": [
+    "nursing",
+    "closed-suction wound drain",
+    "bimanual",
+    "hold a spring while acting",
+    "order matters",
+    "post-operative care",
+    "training manikin"
+  ],
+  "instruction": "The training manikin's drain bulb has just been emptied. Put it back on suction without tugging on the drain tube.",
+  "context": "Emptying and re-arming closed-suction wound drains is routine bedside work for registered nurses (O*NET 29-1141.00, about 3.3 million US jobs) and licensed practical nurses (29-2061.00, about 0.6 million: \"Assemble and use equipment, such as catheters, tracheotomy tubes...\"), at least twice a day per drain on surgical wards. Nursing-skills texts (Open RN Nursing Skills 20.13) teach the step: squeeze the bulb flat and replace its cap while it is still squeezed, trapping a vacuum. Capped while round, the bulb gives no suction and fluid collects under the incision, risking a seroma or infection. The order is the trap: capping first, or letting go before the cap is home, looks finished and silently fails.",
+  "setup": "Positions in cm from the midpoint between the arm bases: x forward, y to the robot's left; heights above the table top, which stands for the bedside. Nothing is loose. Bed: a grey steel side rail 2.5 x 62 x 3 cm along y at x 33, 13 to 16 cm up, on two 2.5 cm square posts at y -34 and 24; beyond it a white sheet, 60 x 120 cm, and an adult wound-care training manikin lying along y, head on a white pillow toward +y: shoulders 42 cm across, torso 36 cm across and 70 cm from shoulders to hips, in a light-blue cotton gown, arms along its sides, a cream blanket over the legs folded down below the hips, the feet tenting it at the foot of the mattress. A white gauze dressing on its near flank at x 45.5, y -12, 8.5 cm up. Drain: a clear 6 mm PVC tube from the dressing, under the rail, into the bottom of a 100 mL silicone suction bulb (Jackson-Pratt type): translucent white oval, 6.4 cm wide, 4.8 cm thick when round, 10 cm tall, hanging loose from a white strap clipped to the rail, centre at x 22, y -12, 7.5 cm up, its flat faces turned 20 degrees from facing straight along y. It swings when pushed (about 1.7 cm for a 1 N sideways push; it hangs as if from a point 16 cm above its centre). It squeezes flat to 1.6 cm against about 10 N and springs back round. On its top: a 1.2 cm square port, 1 cm tall, and a 1.6 cm round white push-fit cap, 6 mm thick, on a tether hinged at the port's edge; the tether springs it open, and it stands open 114 degrees from seated. It seats only when pressed flat onto the port (about 0.25 N), and then stays in. On the bedside table at x 12, y 36: a clear graduated cup, 7 x 7 x 8 cm, holding 2.5 cm of pink fluid.",
+  "scoring": "Judged from the video, a ruler and a photo. Squeeze: 0 with the bulb round (4.8 cm thick across its faces) to 1 flat (1.6 cm). Seated: the cap within 2 degrees of flat on the port. Sealed squeeze: the squeeze when the cap seated (a sealed bulb keeps its thickness). Away: no gripper tool point or pad tip within 6 cm of the bulb's vertical centre line, from 2 cm below the bulb to 4 cm above the port. 0 if at any time the bulb's centre moves more than 3 cm from where it hangs (the drain tugged), or a pad tip comes within 6 mm of the port mouth's centre and 4 mm of its height while the cap is open over 20 degrees; 0 if the cap isn't seated at the end, including doing nothing. Otherwise 0.25 if the sealed squeeze is under 0.7 (capped round: no suction); 0.5 if it is at least 0.7 but a gripper isn't away or the squeeze has fallen under 0.6; 1.0 if it is at least 0.7, the squeeze is still at least 0.6 and both grippers are away, held 1 s.",
+  "run_limit": "1,200 steps (60 seconds at 20 Hz)",
+  "reset_notes": "Lift the cap back open onto its stop and let the bulb spring round. The manikin, tubing, rail and cup stay where they are.",
+  "fidelity": "Approximate. The bulb swings about a point 16 cm above it against a soft spring standing in for its strap and tubing. It is two flat sprung faces (about 10 N to flatten) inside an oval redrawn to their gap; it doesn't deform. The vacuum is task code: once the cap seats, both faces are held. The cap is a hinged lid sprung open by its tether; pressed flat it seats and code holds it, as a push-fit plug. No fluid. The manikin is fixed and visual only.",
+  "scores": "Dream-1 run: 0.0; demo: 1.0",
+  "media": "M-5CKVRE"
+}
