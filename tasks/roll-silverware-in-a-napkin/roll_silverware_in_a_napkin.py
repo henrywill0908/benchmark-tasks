@@ -4,7 +4,8 @@ quarters), flat, its near edge at the side table's near edge; a table knife to t
 fork to its right. Knife and fork lie parallel to the near edge, handles to the robot's left.
 
 The job is to roll the knife and fork up together in the napkin. ``score`` gives 0 until the napkin goes all the way
-round both, 0.3 when it is folded over them, 0.6 when it is rolled on, and 1.0 when it is rolled up (see ``_credit``).
+round both, 0.3 when it is folded over them, 0.6 when it is rolled on, 0.8 when it is rolled up, and 1.0 when the roll
+lies on the side table by itself with both grippers clear of it (see ``_credit``).
 The napkin is true cloth: grippers cannot get under it where it lies flat, only take it where it hangs free.
 """
 
@@ -24,7 +25,7 @@ from yam_arena.constants import FINGER_CLOSED, FINGER_OPEN, PAD_TIP_PAST_TCP  # 
 
 import numpy as np  # noqa: E402
 
-from labkit import Cloth, Marked, Model, Pose, ready_pose  # noqa: E402
+from labkit import Cloth, Marked, Model, Pose, finger_points, on_reset, ready_pose, trial_time  # noqa: E402
 
 SCENE = "station"
 TOP = TABLE_TOP[SCENE]
@@ -79,7 +80,9 @@ TOGETHER_M, TOGETHER_DEG = 0.03, 20.0     # the fork's middle within 3 cm of the
 ROUND_SHARE = 0.75                         # napkin all the way round at least this share of the middle 80% of each piece
 TURNS_FOLDED, TURNS_ROLLED, TURNS_DONE = 0.9, 1.15, 1.6   # times the napkin goes round the knife: folded over, rolled on, rolled up
 ROLL_WIDTH = 0.11                          # rolled up, the napkin is at most this wide across the knife (m); it starts 23.5 cm
-SUCCESS_HOLD_S = 5.0                       # rolled up means it stays rolled: longer than a gripper takes to let go and move off
+REST_HEIGHT = 0.04                         # lying on the side table: the knife's and the fork's centres at most this far above its top (m)
+CLEAR_GAP, CLEAR_S = 0.02, 2.0             # let go: every finger pad at least 2 cm from the napkin, the knife and the fork, for the last 2 s
+SUCCESS_HOLD_S = 2.0
 STILL_M_S, STILL_RAD_S = 0.01, 0.5
 
 
@@ -99,7 +102,8 @@ def _measure(objects) -> dict:
     ``on_table``  the knife, the fork and the napkin all rest on the side table."""
     k, f, n = objects["knife"], objects["fork"], objects["napkin"]
     nodes = getattr(n, "nodes", None)
-    out = {"turns": 0.0, "width": NAPKIN_DEPTH, "knife_in": 0.0, "fork_in": 0.0, "apart": 1.0, "angle": 90.0, "on_table": False}
+    out = {"turns": 0.0, "width": NAPKIN_DEPTH, "knife_in": 0.0, "fork_in": 0.0, "apart": 1.0, "angle": 90.0, "on_table": False,
+           "resting": False, "clear_s": 0.0}
     if nodes is None or len(nodes) != NAPKIN.node_count:
         return out
     a = _axis_of(k)
@@ -132,7 +136,44 @@ def _measure(objects) -> dict:
                apart=float(np.linalg.norm(d - (d @ a) * a)), angle=float(math.degrees(math.acos(min(1.0, abs(float(fa @ a)))))),
                on_table=bool(top_ok(k) and top_ok(f) and float(nodes[:, 2].min()) > BENCH_TOP_Z - 0.10
                              and BENCH_X[0] - 0.02 < float(nodes[:, 0].mean()) < BENCH_X[1] and abs(float(nodes[:, 1].mean())) < BENCH_Y / 2))
+    out.update(resting=bool(out["on_table"] and max(k.pos[2], f.pos[2]) - BENCH_TOP_Z <= REST_HEIGHT), clear_s=_clear_for(objects))
     return out
+
+
+_CLEAR = {"since": None, "at": 0.0}
+
+
+@on_reset
+def _new_trial() -> None:
+    _CLEAR.update(since=None, at=0.0)
+
+
+def _finger_gap(objects) -> float:
+    """The smallest distance (m) from any finger pad of either gripper to the napkin, the knife or the fork; 0 when the
+    finger pads are not known. The knife and fork are taken as points every centimetre along their centre lines."""
+    pads = finger_points()
+    nodes = getattr(objects["napkin"], "nodes", None)
+    if pads is None or nodes is None or not len(nodes):
+        return 0.0
+    pts = [np.asarray(nodes, float)]
+    for o, length in ((objects["knife"], KNIFE_SIZE[0]), (objects["fork"], FORK_SIZE[0])):
+        pts.append(np.asarray(o.pos, float) + np.outer(np.linspace(-length / 2, length / 2, int(round(100 * length)) + 1), _axis_of(o)))
+    pts = np.vstack(pts)
+    return float(min(np.linalg.norm(pts - p, axis=1).min() for p in np.asarray(pads, float)))
+
+
+def _clear_for(objects) -> float:
+    """How long (s) both grippers have been clear of the napkin, the knife and the fork, up to now."""
+    t = trial_time()
+    if t < _CLEAR["at"]:                         # the clock went back: a new trial
+        _CLEAR["since"] = None
+    _CLEAR["at"] = t
+    if _finger_gap(objects) < CLEAR_GAP:
+        _CLEAR["since"] = None
+        return 0.0
+    if _CLEAR["since"] is None:
+        _CLEAR["since"] = t
+    return t - _CLEAR["since"]
 
 
 def _credit(m: dict) -> float:
@@ -142,13 +183,16 @@ def _credit(m: dict) -> float:
          least three quarters of each one's middle 80%, at least 0.9 times round the knife;
     0.3  folded over them, as above;
     0.6  rolled on: the napkin goes at least 1.15 times round the knife;
-    1.0  rolled up: at least 1.6 times round, and the napkin no wider than 11 cm across the knife."""
+    0.8  rolled up: at least 1.6 times round, and the napkin no wider than 11 cm across the knife;
+    1.0  rolled up and let go: the roll lies on the side table (the knife's and the fork's centres no more than 4 cm
+         above its top) and every finger pad of both grippers has been at least 2 cm from the napkin, the knife and
+         the fork for the last 2 s."""
     if not m["on_table"] or m["apart"] > TOGETHER_M or m["angle"] > TOGETHER_DEG:
         return 0.0
     if min(m["knife_in"], m["fork_in"]) < ROUND_SHARE or m["turns"] < TURNS_FOLDED:
         return 0.0
     if m["turns"] >= TURNS_DONE and m["width"] <= ROLL_WIDTH:
-        return 1.0
+        return 1.0 if m["resting"] and m["clear_s"] >= CLEAR_S else 0.8
     return 0.6 if m["turns"] >= TURNS_ROLLED else 0.3
 
 
@@ -162,7 +206,7 @@ def score(objects) -> float:
     if os.environ.get("ROLL_SILVERWARE_LOG") and _STEP[0] % 20 == 1:
         print(f"[roll] step {_STEP[0]:4d}: score {s:.1f}; napkin {m['turns']:.2f} times round the knife, {100 * m['width']:.1f} cm wide; all round the "
               f"knife {m['knife_in']:.2f}, the fork {m['fork_in']:.2f}; fork {100 * m['apart']:.1f} cm and {m['angle']:.0f} deg from the knife; "
-              f"on the side table {m['on_table']}{_also(objects)}", flush=True)
+              f"on the side table {m['on_table']}, lying on it {m['resting']}; grippers clear for {m['clear_s']:.1f} s{_also(objects)}", flush=True)
     return s
 
 
@@ -180,7 +224,7 @@ def _also(objects) -> str:
 
 
 def success(objects) -> bool:
-    """Rolled up (score 1.0) with the knife and fork lying still; held for SUCCESS_HOLD_S it ends the trial."""
+    """Rolled up and let go (score 1.0) with the knife and fork lying still; held for SUCCESS_HOLD_S it ends the trial."""
     if not objects or "napkin" not in objects:
         return False
     still = all(float(np.linalg.norm(objects[n].lin_vel)) < STILL_M_S and float(np.linalg.norm(objects[n].ang_vel)) < STILL_RAD_S for n in ("knife", "fork"))

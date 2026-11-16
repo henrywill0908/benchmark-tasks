@@ -85,7 +85,7 @@ __all__ = [
     "Latch", "Mark", "Marked", "Model", "Pose", "Slider", "SliderState", "Towel", "TowelState", "Trial",
     "all_resting", "count_inside", "forward_grip", "glove_on", "handed_over", "hinge_step", "inside", "lamp_group_at",
     "lamp_switches", "lifted", "lit_group", "moved", "on_reset", "ready_pose", "rolled", "set_glove", "set_lamp_group",
-    "switch_lamp_group", "tick", "tilt_deg", "trial_seed", "trial_time",
+    "finger_points", "switch_lamp_group", "tick", "tilt_deg", "trial_seed", "trial_time",
 ]
 
 Color = tuple[float, float, float]
@@ -1011,6 +1011,7 @@ _CLOCK: dict = {"t": 0.0}
 _SWITCHES: list = []  # this trial's timed lamp switches: [at (s), group, applied]
 _LATCH: dict = {}  # hinge name -> latched at the last step
 _GLOVE: dict = {}  # hand name -> glove on this trial (absent: the Hand's ``gloved``)
+_FINGERS: dict = {"pts": None}  # points on both grippers' finger pads at the last step (None: not known)
 STEP_S = 0.1  # the control period, if the embodiment doesn't say (yam_arena runs at 10 Hz)
 
 
@@ -1101,6 +1102,36 @@ def on_reset(fn):
     """Run ``fn()`` after every reset, before the trial's first step."""
     _RESET.append(fn)
     return fn
+
+
+def finger_points():
+    """Points on both grippers' finger pads at the last control step (m, world, relative to the env origin): on each
+    pad's inner face, at the pad tip, at the TCP and 2 cm behind it. None when they are not known (no simulator).
+    score() is given objects only, so a task uses these to check that the grippers have let go."""
+    return _FINGERS["pts"]
+
+
+def _read_fingers(environment) -> None:
+    from yam_arena.constants import PAD_TIP_PAST_TCP, TCP_OFFSET
+
+    try:
+        base = getattr(environment, "unwrapped", environment)
+        origin = _np(base.scene.env_origins[0])
+        pts = []
+        for arm in ("left_robot", "right_robot"):
+            robot = base.scene[arm]
+            pose = _np(robot.data.body_link_pose_w)[0][list(robot.body_names).index("gripper")]
+            jp, jn = _np(robot.data.joint_pos)[0], list(robot.joint_names)
+            half_gap = max(abs(jp[jn.index(j)]) for j in ("joint7", "joint8") if j in jn)
+            r = quat_xyzw_to_matrix(pose[3:7])
+            for along in (-0.02, 0.0, PAD_TIP_PAST_TCP):
+                centre = pose[:3] + r @ (np.array(TCP_OFFSET) + [0.0, 0.0, along]) - origin
+                pts += [centre + r[:, 0] * side * half_gap for side in (1.0, -1.0)]
+        _FINGERS["pts"] = np.array(pts)
+    except Exception as exc:  # a scene without the two arms: leave the fingers unknown
+        if _FINGERS.get("error") is None:
+            print(f"labkit: finger points unavailable: {exc!r}", flush=True)
+        _FINGERS["error"], _FINGERS["pts"] = exc, None
 
 
 @on_reset
@@ -1764,6 +1795,7 @@ def _show_gloves(environment) -> None:
 
 def _after_step(environment, t: float | None = None) -> None:
     tick(_CLOCK["t"] + STEP_S if t is None else t, environment)  # timed lamp switches
+    _read_fingers(environment)
     if _LIT["on"]:
         return
     for spec in _SPECS.values():
@@ -1786,6 +1818,7 @@ def _set_joint_starts(environment) -> None:
 
 def _after_reset(environment) -> None:
     _set_joint_starts(environment)
+    _read_fingers(environment)
     _show_lamps(environment, False)
     for fn in _RESET:  # labkit's _start_trial first, then the task's hooks (which may schedule lamps, gloves)
         fn()

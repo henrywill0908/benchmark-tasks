@@ -12,6 +12,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import roll_silverware_in_a_napkin as task  # noqa: E402
+import labkit  # noqa: E402
 from labkit import start_state  # noqa: E402
 
 EDGE, TOP = task.BENCH_X[0], task.BENCH_TOP_Z
@@ -50,6 +51,20 @@ def _trial(times, fork_dx=0.0, fork_yaw=-math.pi / 2, base=TOP, speed=0.0):
     return {"napkin": _sheet(profile), "knife": _piece(c[0], 0.0, c[1], speed=speed), "fork": _piece(c[0] + fork_dx, task.FORK_Y, c[1] + 0.004, yaw=fork_yaw)}
 
 
+AWAY = np.array([[0.0, 0.305, TOP + 0.30], [0.0, -0.305, TOP + 0.30]])    # finger pads up at the ready poses, far from the roll
+
+
+def _score_after(objs, seconds, pads=AWAY):
+    """The score once the finger pads have been at ``pads`` for ``seconds`` (None: finger pads not known)."""
+    task._new_trial(); labkit._FINGERS["pts"] = pads
+    labkit.tick(0.0); task.score(objs)
+    labkit.tick(seconds)
+    try:
+        return task.score(objs), task.success(objs)
+    finally:
+        labkit._FINGERS["pts"] = None; labkit.tick(0.0); task._new_trial()
+
+
 def test_layout_matches_the_setup_text():
     nap, knife, fork = (start_state(o) for o in (task.NAPKIN, task.KNIFE, task.FORK))
     assert abs(nap.low[0] - (EDGE + 0.005)) < 0.002 and abs(nap.high[0] - nap.low[0] - 0.235) < 0.002 and abs(nap.high[1] - 0.14) < 0.002
@@ -81,7 +96,7 @@ def test_napkin_dropped_over_them_on_the_bare_table_scores_zero():
 
 
 def test_each_stage_scores_its_step():
-    for times, want in ((0.80, 0.3), (1.10, 0.6), (1.60, 1.0)):
+    for times, want in ((0.80, 0.3), (1.10, 0.6), (1.60, 0.8)):
         objs = _trial(times); m = task._measure(objs)
         assert task.score(objs) == want, (times, want, m)
     folded, rolled_on, rolled_up = (task._measure(_trial(t)) for t in (0.80, 1.10, 1.60))
@@ -89,18 +104,31 @@ def test_each_stage_scores_its_step():
     assert rolled_up["width"] < task.ROLL_WIDTH < rolled_on["width"]
 
 
+def test_full_credit_needs_the_roll_let_go_and_lying_on_the_side_table():
+    roll = _trial(1.60)
+    assert _score_after(roll, 2.5) == (1.0, True), "rolled up, grippers clear for 2.5 s"
+    assert _score_after(roll, 1.5)[0] == 0.8, "clear for only 1.5 s"
+    assert _score_after(roll, 2.5, pads=None)[0] == 0.8, "finger pads not known"
+    knife = roll["knife"].pos
+    assert _score_after(roll, 2.5, pads=np.vstack([AWAY, [knife + [0.0, 0.0, 0.015]]]))[0] == 0.8, "a finger pad 1.5 cm from the knife: still held"
+    tail = roll["napkin"].nodes[-1]
+    assert _score_after(roll, 2.5, pads=np.vstack([AWAY, [tail + [0.0, 0.0, 0.010]]]))[0] == 0.8, "a finger pad pressing on the napkin's end"
+    assert _score_after(_trial(1.60, base=TOP + 0.05), 2.5)[0] == 0.8, "rolled up but held 5 cm above the side table"
+    assert _score_after(_trial(1.10), 2.5)[0] == 0.6, "letting go of a half-rolled bundle earns nothing more"
+
+
 def test_fork_outside_the_roll_scores_zero():
-    assert task.score(_trial(1.60, fork_dx=0.06)) == 0.0, "fork lying beside the roll"
-    assert task.score(_trial(1.60, fork_yaw=-math.pi / 2 + math.radians(35.0))) == 0.0, "fork lying across the knife"
+    assert _score_after(_trial(1.60, fork_dx=0.06), 2.5)[0] == 0.0, "fork lying beside the roll"
+    assert _score_after(_trial(1.60, fork_yaw=-math.pi / 2 + math.radians(35.0)), 2.5)[0] == 0.0, "fork lying across the knife"
 
 
 def test_roll_that_fell_off_the_side_table_scores_zero():
-    assert task.score(_trial(1.60, base=task.TOP)) == 0.0
+    assert _score_after(_trial(1.60, base=task.TOP), 2.5)[0] == 0.0
 
 
 def test_success_needs_the_roll_lying_still():
-    assert task.success(_trial(1.60)) and not task.success(_trial(1.60, speed=0.05)) and not task.success(_trial(1.10))
-    assert task.SUCCESS_HOLD_S == 5.0
+    assert _score_after(_trial(1.60, speed=0.05), 2.5) == (1.0, False), "let go but still moving"
+    assert not task.success(_trial(1.60)) and task.SUCCESS_HOLD_S == 2.0 and task.CLEAR_S == 2.0 and task.CLEAR_GAP == 0.02
 
 
 def test_demo_is_the_five_steps_in_order():

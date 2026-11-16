@@ -27,7 +27,8 @@ inspect-robots run --embodiment yam_arena --policy dream \
 Scripted demo: the same command with `--policy yam_scripted`.
 
 The run prints `task_score` at the end. `ROLL_SILVERWARE_LOG=1` prints the measurements behind the score once a
-second: how many times the napkin goes round the knife, how wide it is, and where the fork lies against the knife.
+second: how many times the napkin goes round the knife, how wide it is, where the fork lies against the knife, and how
+long both grippers have been clear of the roll.
 
 ## Scoring
 
@@ -47,9 +48,10 @@ these hold:
 | Anything off the side table | 0 |
 | Folded over: napkin 0.9 to under 1.15 times round the knife | 0.3 |
 | Rolled on: 1.15 times round or more | 0.6 |
-| Rolled up: 1.6 times round or more, and the napkin at most 11 cm wide across the knife | 1.0 |
+| Rolled up: 1.6 times round or more, and the napkin at most 11 cm wide across the knife, but still held, pressed on or lifted | 0.8 |
+| Rolled up and let go: the roll lies on the side table (knife and fork centres at most 4 cm above its top) and every finger pad of both grippers has been at least 2 cm from the napkin, the knife and the fork for the last 2 s | 1.0 |
 
-The trial ends with 1.0 once the roll scores 1.0 and the knife and fork have lain still for 5 s.
+The trial ends with 1.0 once the roll scores 1.0 and the knife and fork have lain still for 2 s.
 
 On a real table: a tape measure across the roll gives its width, and counting the layers at the handle end gives how
 many times the napkin goes round.
@@ -69,7 +71,7 @@ The demo is open loop and the napkin is simulated cloth, which does not behave i
 
 ## Runtime and seeds
 
-- Demo: 104 s simulated (2,086 steps); the trial ends once the roll has lain still for 5 s. About 14 minutes of wall
+- Demo: 104 s simulated (2,088 steps to full score): the trial ends once the roll has been let go and has lain still for 2 s. About 14 minutes of wall
   time on an L4 GPU, including Isaac Sim's start.
 - Dream-1: up to 3,000 steps (2 minutes 30 seconds simulated); about 10 minutes of wall time.
 - One fixed layout: `-E object_jitter=0`, so no seed is needed.
@@ -90,13 +92,14 @@ The demo is open loop and the napkin is simulated cloth, which does not behave i
 python -m pytest -q tasks/roll-silverware-in-a-napkin/test_roll_silverware_in_a_napkin.py
 ```
 
-They check that the layout matches the setup text, score a made-up end state for every row of the table above, and
-check the demo's five steps. They need `yam_arena` but not Isaac Sim.
+They check that the layout matches the setup text, score a made-up end state for every row of the table above
+(including a finished roll that is still held, pressed on, or lifted off the table), and check the demo's five steps. They need `yam_arena` but not Isaac Sim.
 
 ## Files
 
 - `roll_silverware_in_a_napkin.py`: the task file (layout, scoring, scripted demo).
-- `labkit.py`: object kinds that `yam_arena` task files don't have (true cloth, model files).
+- `labkit.py`: object kinds that `yam_arena` task files don't have (true cloth, model files), and the finger pad
+  positions the scorer uses to check that the grippers have let go.
 - `models/`: the knife and fork (`.obj`, `.usd`) and `make_cutlery.py`, which generates them.
 - `test_roll_silverware_in_a_napkin.py`: offline checks.
 
