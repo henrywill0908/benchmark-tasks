@@ -583,7 +583,7 @@ class Trial:
     crest_low: float = 0.016  # live: the fingertips' height above the box centre at the end of the sweep (lip: 0.045)
     crest_back: float = 0.008  # live: the sweep starts this far to the outlet's side of the loop's top (m)
     crest_up: float = 0.010  # live: and this far above it
-    # Round 13d (Henry's idea): let the outlet do most of the wire work. ``tip``: the right hand brings the outlet in
+    # Round 13d: let the outlet do most of the wire work. ``tip``: the right hand brings the outlet in
     # with its top edge leading by this many degrees and levels it on the last push (on the laptop this fed the hot
     # wire in under the strap's top edge; the neutral, standing beside the strap, was the one left out). ``wire_move``
     # "lean": the left hand pushes a loop sideways toward the opening's centre with the side of its closed fingers,

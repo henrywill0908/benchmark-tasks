@@ -54,8 +54,8 @@ score is 0 unless all of these hold:
   hole; with nothing holding it, the folded copper pushes the outlet back out several millimetres, so flat on the
   wall is not asked for);
 - every wire is inside the box: no point of a wire more than 2 mm in front of the wall's face, and none outside the
-  opening's outline within 3 mm of the face. The end of each wire that is fixed to the outlet's terminal is part of
-  the outlet, and is judged with the strap, not by the 2 mm rule;
+  opening's outline within 3 mm of the face. The last 5 mm of each wire, at the outlet's terminal, is part of the
+  outlet, and is judged with the strap, not by the 2 mm rule;
 - the outlet has been let go: the grip centre and pad tips of both grippers at least 3 cm from the outlet and from
   every wire, with the outlet moving under 1 cm/s, for the last 2 s.
 
@@ -70,8 +70,61 @@ score is 0 unless all of these hold:
 
 The trial ends with 1.0 once that last row has held for 1 s.
 
-On a real wall: a ruler from the wall to each corner of the strap, a look round the strap for wire, and a ruler
-across each screw hole.
+### Checking a trial on a real rig
+
+Strap and screw holes: a ruler from the wall to each corner of the strap, and a ruler across each screw hole.
+
+Wires: three photos, taken once the grippers are away, with a strip 2 mm thick stuck to the wall 3 cm below the
+opening as the reference:
+
+1. square-on from the front;
+2. along the wall's face from the robot's left, level with the opening's centre;
+3. the same from the robot's right.
+
+A wire fails if, anywhere other than the last 5 mm at its terminal, more than half its thickness stands further from
+the wall than the strip's face in photo 2 or 3, or if any part of it lies on the wall or the box's rim outside the
+opening in any photo.
+
+The box does not need to be see-through, because the rule is only about wire in front of the wall's face. A scoring
+outlet is at most 15 mm from the wall, and photos 2 and 3 look straight into that gap. The outlet's body is as wide
+as its strap, so nothing in the gap can sit behind it: each side photo shows its own side of the body and the open
+space behind the strap's two ends. Any part of a wire that no photo shows is therefore behind the wall's face, inside
+the box, which is where the rule wants it. Wire hidden behind the outlet cannot break the rule unseen.
+
+## Preparing the wires on a real rig
+
+Every trial starts with three fresh wires, so the starting shape and the starting stiffness are the same each time.
+About 5 minutes.
+
+1. Cut three new lengths of solid 12 AWG copper from the same reels: one black and one white, insulated, 20.3 cm
+   (8 in) from the cable entry to the terminal; one bare, 19.2 cm. Add what the entry clamp and the terminal screw
+   take.
+2. Mark each fold's place, measured along the wire from the terminal end, and bend it once on a three-pin block (two
+   6 mm pins 32 mm apart and a third midway) until the V stands 9 mm off the wire's line, within 1 mm, over 32 mm of
+   wire.
+
+   | Wire | Fold 1, from the terminal | Fold 1 points | Fold 2, from the terminal | Fold 2 points |
+   |---|---|---|---|---|
+   | black | 7.0 cm | up | 13.8 cm | down and to the robot's right |
+   | white | 7.0 cm | up | 13.8 cm | down and to the robot's right |
+   | bare | 7.3 cm | down | 13.5 cm | down and to the robot's right |
+
+3. Fit each wire to its terminal and to the cable entry with its folds pointing as the table says, and pull the
+   outlet out until the back of its strap is 11.5 cm in front of the wall.
+4. Lay each wire against its page of [wire_start_shapes.pdf](wire_start_shapes.pdf) (1:1 when printed at 100%; a
+   50 mm bar on each page checks the print) and shape it by hand until it follows the drawing to within 3 mm, in the
+   side view and in the top view. [wire_start_points.csv](wire_start_points.csv) lists the same paths, a point every
+   5 mm. The simulated wire is a chain of 10.7 mm links laid along this path: every joint starts within 1 mm of the
+   drawing.
+
+![The three wires' starting shapes, side and top views](wire_start_shapes.png)
+
+Used wires are thrown away, never straightened and used again. Copper work-hardens where it is bent, so a wire that
+has been through a trial is stiffer at every place it was folded; only new wire, bent once the same way, starts with
+the same stiffness. In the simulator every reset puts the wires back in this shape, with each fold hardened by the
+bend it holds and nothing carried over from the trial before.
+
+The outlet is not connected to power, and the strap's edges are deburred so they cannot cut the gripper pads.
 
 ## The scripted demo
 
@@ -107,8 +160,8 @@ and the outlet's position and roll during step 7 (to keep it centred, and to hol
 - **Wires:** each is a chain of rigid links 10.7 mm long on two-axis joints that bend like solid 12 AWG copper
   (conductor 2.05 mm): bending stiffness from E 117 GPa, first yield at 59 N mm, about 100 N mm once fully plastic,
   and work hardening from annealed copper's stress-strain curve, so a bend stays and gets harder to bend further
-  (`copper.py`). Each wire starts with two old folds, already hardened. Twist along a wire, stretch and the
-  insulation's own stiffness are left out. A wire cannot pull off its terminal.
+  (`copper.py`). Each wire starts with two folds, each hardened by the bend it holds, as fresh wire bent once is.
+  Twist along a wire, stretch and the insulation's own stiffness are left out. A wire cannot pull off its terminal.
 - **Outlet, box and wall:** true size (a duplex outlet's strap and body, an 18 cubic inch single-gang box, half-inch
   board), rigid.
 - **Grip:** the gripper pads hold the outlet by friction alone. Nothing is attached by rule at any point.
@@ -130,4 +183,9 @@ They need `yam_arena` but not Isaac Sim.
 - `copper.py`: how the copper conductor bends.
 - `labkit.py`: builds the outlet and its three wires as one articulation and applies the copper rule each step.
 - `scripted_demo.py`: the logger the demo was built with (optional; see Run a trial).
+- `wire_start_shapes.pdf`, `wire_start_shapes.png`: each wire's starting shape, one 1:1 page per wire, and all three
+  on one sheet.
+- `wire_start_points.csv`: each wire's starting path, a point every 5 mm.
+- `make_wire_drawings.py`: writes those three files from `outlet_logic.py` (needs numpy and matplotlib, not the
+  simulator).
 - `test_fold_outlet_wires_into_wall_box.py`: the checks above.
