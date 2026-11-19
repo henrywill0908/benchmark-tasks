@@ -78,6 +78,21 @@ Back the set screw out 300 deg from tight (its tip then 0.3 mm above the keyway'
 its rear face is at the start mark (x 26.2) with its keyway turned 65 deg toward +y, lift the key out and lay it on the
 mat, and stand the driver in its cup.
 
+## Simulation fidelity
+
+Rigid bodies. PhysX can't model a 6 N9 interference fit, a thread or a clutch, so task code does (stated in
+pulley_logic.py): the simulated keyseat is 6.4 mm wide for a 6.0 mm key, 1.5 mm longer at its free end than drawn and
+its top edges broken 0.6 mm (the arm places a key to about a millimetre; a key caught on a square lip sits perched),
+and a hidden pad in it holds a key 1.5 mm proud until it is pressed down with 10 N, then lets it reach the floor,
+where a key that is home is fixed in place. The pulley rides two joints on the shaft (slide and turn, lightly damped,
+no bore contact); its keyway can pass the key's end only with the keyway within 4 deg of the key, the key home and the
+screw clear of the keyway (else the pulley stops at the key; pushed on with about 20 N while lined up over a proud
+key, the key cocks). The set screw advances 0.8 mm a turn while the driver's bit is in its socket (the bit is held on
+the screw's axis once it drops in within 2 mm and 10 deg (a bit pushed onto the screw's face off the socket rests
+there until it lines up), and comes out when the hand holding the handle lifts it 5 mm); the clutch slips 30 deg past
+the screw touching the key (estimated angle to 2.0 N m), and a tight screw fixes the pulley where it is. Masses: key
+20 g (a real one is 7 g), pulley 150 g, driver 60 g. The free end has a stop (a real pulley could slide off).
+
 ## Assets
 
 No third-party assets: every shape (shaft, keyseat, pulley, key, driver, cup) is generated in code (`task.py`,
