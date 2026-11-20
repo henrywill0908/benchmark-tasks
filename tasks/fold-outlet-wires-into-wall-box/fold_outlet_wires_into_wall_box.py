@@ -3,13 +3,15 @@ flush with its face, is an empty blue single-gang electrical box with a threaded
 ivory wall outlet on a steel mounting strap hangs out of the box on its wires, about 11 cm in front of the wall: a
 black wire to its right side, a white wire to its left side and a bare copper wire to the left side, lower down. The
 wires are stiff solid copper, about 20 cm long, still kinked where they were folded, and come out of the top back of the
-box.
+box. The outlet's two mounting screws sit in the ends of its strap, one above its face and one below. A red-handled
+ratcheting screwdriver lies on a grey rest on the table to the robot's left, pointing away from the robot.
 """
 
 # yam_arena hands the docstring above to the policy as task documentation, so it describes only what is on the table.
 #
 # The numbers (sizes, the wires' start shape, the scoring limits and the scripted demo's moves) are in outlet_logic.py;
 # copper.py is how a 12 AWG copper conductor bends; labkit.py builds the outlet and its wires as one articulation.
+# screws.py holds the two mounting screws, the screwdriver and the rule that stands in for the thread.
 # The scripted demo is closed loop (it reads where the wires and the outlet are as it goes): scripted_demo.py runs it.
 # Development switches, left at their defaults for the task:
 #   OUTLET_STYLE=d6|alternate   joint style (two-axis joints, or alternating revolute joints)
@@ -20,6 +22,7 @@ box.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -33,17 +36,24 @@ from yam_arena.task_file import TABLE_TOP, Box  # noqa: E402
 
 import copper  # noqa: E402
 import outlet_logic as L  # noqa: E402
-from labkit import Harness, HarnessPart, HarnessWire, Pose, forward_grip, on_reset, on_step, ready_pose, state  # noqa: E402
+import screw_moves  # noqa: E402
+import screws as S  # noqa: E402
+from labkit import (  # noqa: E402
+    PHYSICS_ERRORS, Built, Harness, HarnessPart, HarnessWire, Part, Pose, Prop, forward_grip, on_physics, on_reset,
+    on_step, place, push, push_link, ready_pose, state,
+)
 
 SCENE = "station"
 assert abs(TABLE_TOP[SCENE] - L.TOP) < 1e-9, "outlet_logic.TOP must match the station's table top"
 CONTROL_HZ = L.CONTROL_HZ
 SUCCESS_HOLD_S = 1.0
-INSTRUCTION = "Put the outlet back in its wall box, ready for its screws, with every wire inside the box. Then let go."
+INSTRUCTION = ("Put the outlet back in its wall box with every wire inside the box, then drive its two mounting screws "
+               "home with the screwdriver and let go.")
 PROBE = os.environ.get("OUTLET_PROBE", "straight")
 LOG = bool(os.environ.get("OUTLET_LOG"))  # print the measurements behind the score twice a second
 
 DRYWALL, BLUE, IVORY, STEEL = (0.90, 0.90, 0.87), (0.15, 0.33, 0.72), (0.93, 0.91, 0.84), (0.66, 0.67, 0.70)
+HOLE, BLUE_SHADE = (0.04, 0.04, 0.05), (0.08, 0.18, 0.42)  # a hole seen from outside; the lead-in round a boss's hole
 
 # -- the wall, with a hole for the box -------------------------------------------------------------------------------------
 _y, _z = L.OPEN_C
@@ -76,6 +86,15 @@ BOX = [
     Box("boss_bottom", pos=(_bx, _y, _z - L.BOX_H / 2 + L.BOSS_P / 2), size=(L.BOX_D, L.BOSS_W, L.BOSS_P),
         color=BLUE),
 ]
+# The bosses' screw holes, drawn on their faces at outlet_logic.boss_holes() (screws.boss_marks). Looks only: a fixed
+# prop with no collider of its own and no colliding part, so the bosses above are the same solid boxes to the wires.
+_hole_c = (L.WALL_X, _y, _z)
+BOSS_HOLES = Prop(
+    "boss_holes", pos=_hole_c, size=(2 * S.MARK, S.BOSS_LEAD_D, L.SCREW_SPACING + S.BOSS_LEAD_D), color=BLUE,
+    parts=tuple(Part(name, mesh, at=tuple(float(a - c) for a, c in zip(at, _hole_c, strict=True)),
+                     color=BLUE_SHADE if name.startswith("lead") else HOLE,
+                     roughness=0.6 if name.startswith("lead") else 0.9)
+                for name, mesh, at in S.boss_marks()))
 
 # -- the outlet on its wires (labkit Harness) ------------------------------------------------------------------------------
 _ear_z = L.STRAP_MID_H / 2 + L.EAR_H / 2
@@ -86,6 +105,9 @@ PARTS = (
     HarnessPart("body", L.BODY, (L.BODY[0] / 2, 0.0, 0.0), IVORY),
     HarnessPart("face", L.FACE, (-L.STRAP_T - L.FACE[0] / 2, 0.0, 0.0), IVORY),
 )
+# The strap's two screw slots, drawn where screws.slot_points has them (screws.slot_marks). Looks only: the strap
+# above stays the same solid plate to the wires, the wall and the screws' heads (labkit's Harness.looks never collide).
+SLOTS = tuple(Part(name, mesh, at=at, color=HOLE, roughness=0.9) for name, mesh, at in S.slot_marks())
 
 
 def _link_mass(w: L.WireRun) -> float:
@@ -117,7 +139,7 @@ def build_harness(ground: str = GROUND) -> Harness:
                                 w.color, _link_mass(w),
                                 points=tuple(tuple(float(v) for v in p) for p in L.start_polyline(w) - L.ANCHOR))
                     for w in L.wires(ground)),  # pre-bent: each wire's relaxed S (outlet_logic.start_polyline)
-        parts=PARTS, device_at=tuple(L.DEVICE_START - L.ANCHOR), device_mass=L.DEVICE_MASS,
+        parts=PARTS, looks=SLOTS, device_at=tuple(L.DEVICE_START - L.ANCHOR), device_mass=L.DEVICE_MASS,
         stiffness=L.joint_stiffness(L.SEGMENT) * scale,
         damping=0.03, armature=_f("OUTLET_ARMATURE", 5e-5),
         yield_angle=L.yield_angle(L.SEGMENT) * _f("OUTLET_YIELD_SCALE", 1.0),
@@ -134,18 +156,92 @@ def build_harness(ground: str = GROUND) -> Harness:
 
 HARNESS = build_harness()
 
-OBJECTS = [*WALL, *BOX, HARNESS]
+# -- the two mounting screws, the screwdriver and its rest (screws.py) -----------------------------------------------------
+# ZINC: clear zinc plate on steel, a cool mid grey. ZINC_METAL: mostly metal, so it shines but keeps some of its colour.
+ZINC, RED, BLACK, TOOL_STEEL, REST_GREY = (0.62, 0.64, 0.68), (0.74, 0.10, 0.08), (0.07, 0.07, 0.07), (0.72, 0.73, 0.76), \
+    (0.36, 0.37, 0.40)
+ZINC_METAL = 0.7
+_sm, _dm = S.screw_meshes(), S.driver_meshes()
+_START_SCREWS = S.Screws()
+
+
+def _screw(i: int) -> Built:
+    """A mounting screw as a driven body: its head collides (it is what presses the strap to the wall), its shank is
+    only drawn. The head has no friction: a head that nothing can stop, gripping the strap while it pulls it flat, twists
+    the whole outlet round (the other slot swung 2.5 mm off its hole, turning head or not). What keeps the strap on its
+    holes is each started screw's shank in its slot, which screws.pin_forces stands in for."""
+    pos, axis, _ = _START_SCREWS.pose(L.DEVICE_START, (0.0, 0.0, 0.0, 1.0), i)
+    return Built(
+        S.NAMES[i], pos=tuple(float(v) for v in pos - axis * S.HEAD_H / 2), size=S.SCREW_CORE, color=ZINC,
+        mass=S.SCREW_MASS, driven=True, friction=(0.0, 0.0), friction_mix="min",
+        parts=(Part("head", _sm["head"], color=ZINC, collides=True, roughness=0.3, metallic=ZINC_METAL),
+               Part("shank", _sm["shank"], color=ZINC, roughness=0.35, metallic=ZINC_METAL),
+               Part("slot", _sm["slot"], color=BLACK), Part("cross", _sm["cross"], color=BLACK)))
+
+
+SCREWS = [_screw(0), _screw(1)]
+# The screwdriver and the screws don't collide: a rigid point on a rigid domed head skates off it (first Isaac run of
+# the bit, 19 Nov: 3.4 mm off the axis before the recess rule could hold it). The thread rule is their whole contact:
+# the head stops the bit and the recess centres it (screws.py).
+SCREWDRIVER = Built(
+    "screwdriver", pos=tuple(float(v) for v in S.driver_start()), size=S.DRIVER_CORE, color=RED, mass=S.DRIVER_MASS,
+    apart_from=S.NAMES,
+    parts=(Part("grip", _dm["grip"], color=RED, collides=True, roughness=0.6),
+           Part("collar", _dm["collar"], color=BLACK, collides=True, roughness=0.4),
+           Part("cap", _dm["cap"], color=BLACK, collides=True, roughness=0.4),
+           Part("shaft", _dm["shaft"], color=TOOL_STEEL, collides=True, roughness=0.25),
+           Part("tip", _dm["tip"], color=TOOL_STEEL, collides=True, roughness=0.25)))
+REST = [Box(name, pos=tuple(float(v) for v in at), size=tuple(float(v) for v in size), color=REST_GREY)
+        for name, size, at in S.rest_posts()]
+
+OBJECTS = [*WALL, *BOX, BOSS_HOLES, HARNESS, *SCREWS, SCREWDRIVER, *REST]
+
+# The thread: screws.py's rule, run before every physics step. It puts each screw where it belongs (riding in the strap
+# until it is started, then in the box, one turn deeper per forward turn of an engaged screwdriver) and holds the
+# engaged bit on the screw's axis, as the recess does. Nothing else moves an object.
+THREAD = S.Screws()
+_THREAD: dict = {"device": None, "error": None, "tip": None}
+
+
+@on_physics
+def _drive_screws(environment) -> None:
+    try:
+        from labkit import _np
+
+        base = environment.unwrapped
+        outlet = base.scene["outlet"]
+        if _THREAD["device"] is None:
+            _THREAD["device"] = list(outlet.body_names).index("device")
+        d = _THREAD["device"]
+        origin = _np(base.scene.env_origins)[0][:3]
+        dev_pos = _np(outlet.data.body_pos_w)[0][d] - origin
+        dev_quat = _np(outlet.data.body_quat_w)[0][d]
+        driver = base.scene["screwdriver"]
+        pose = _np(driver.data.root_link_pose_w)[0]
+        vel = _np(driver.data.root_vel_w)[0]
+        poses, force, tip = THREAD.step(dev_pos, dev_quat, pose[:3] - origin, L._rot(pose[3:7]), vel[:3], vel[3:6])
+        _THREAD["tip"] = tip
+        for name, (pos, quat) in zip(S.NAMES, poses, strict=True):
+            place(environment, name, pos, quat)
+        if force.any():
+            push(environment, "screwdriver", force, tip)
+        for pin, at in S.pin_forces(dev_pos, dev_quat, THREAD.started, THREAD.pin):  # a started screw's shank holds its slot
+            push_link(environment, "outlet", d, pin, at)  # one call each, as tuned (see screws.K_PIN)
+    except Exception as err:  # noqa: BLE001 - a broken thread must show in the log, never stop a trial
+        _THREAD["error"] = f"{type(err).__name__}: {err}"
 
 
 # -- scoring ---------------------------------------------------------------------------------------------------------------
 # score() sees object states only, so an on_step hook records each step how close the nearest gripper point (TCP and
 # pad tips, both arms) comes to the outlet's outline: credit needs the outlet let go, 3 cm clear (outlet_logic.CLEAR).
-SEEN = {"hand_clear": float("inf"), "clear_s": 0.0, "error": None}
+SEEN = {"hand_clear": float("inf"), "clear_s": 0.0, "anchor": None, "error": None}
 
 
 @on_reset
 def _new_trial() -> None:
-    SEEN["hand_clear"], SEEN["clear_s"], SEEN["error"] = float("inf"), 0.0, None
+    SEEN["hand_clear"], SEEN["clear_s"], SEEN["anchor"], SEEN["error"] = float("inf"), 0.0, None, None
+    THREAD.reset()
+    _THREAD["error"], _THREAD["tip"] = None, None
 
 
 def _gripper_points(environment) -> list:
@@ -169,13 +265,15 @@ def _step(environment) -> None:
     try:
         s = state(environment, "outlet")
         pts = _gripper_points(environment)
+        if _THREAD["tip"] is not None:  # the screwdriver's tip counts as a hand: left on a screw, it has not let go
+            pts = [*pts, np.asarray(_THREAD["tip"], float)]
         # clear of the outlet AND of every wire: a gripper pressing the wires into the box has not let go
         SEEN["hand_clear"] = min(L.hand_clearance(pts, s.pos, s.quat_xyzw), L.wire_clearance(pts, s.polylines))
-        still = float(np.linalg.norm(s.lin_vel)) <= L.STILL_SPEED
-        # how long it has been let go and still, without a break (one control step at a time)
-        SEEN["clear_s"] = SEEN["clear_s"] + 1.0 / CONTROL_HZ if SEEN["hand_clear"] >= L.CLEAR and still else 0.0
+        # how long it has been let go and at rest, without a break: no strap corner 1 mm from where it was (L.rest_count)
+        SEEN["clear_s"], SEEN["anchor"] = L.rest_count(SEEN["clear_s"], SEEN["anchor"], L.strap_corners(s.pos, s.quat_xyzw),
+                                                       SEEN["hand_clear"], 1.0 / CONTROL_HZ)
     except Exception as err:  # noqa: BLE001 - never credit an outlet whose grippers couldn't be checked
-        SEEN["hand_clear"], SEEN["clear_s"], SEEN["error"] = 0.0, 0.0, f"{type(err).__name__}: {err}"
+        SEEN["hand_clear"], SEEN["clear_s"], SEEN["anchor"], SEEN["error"] = 0.0, 0.0, None, f"{type(err).__name__}: {err}"
     if LOG:  # OUTLET_LOG=1: the measurements behind the score, twice a second
         try:
             from labkit import trial_time
@@ -190,23 +288,35 @@ def _step(environment) -> None:
                     "tab_off_mm": [round(1000 * float(v), 1) for v in L.tab_offsets(s.pos, s.quat_xyzw)],
                     "loose_wire_front_mm": front, "wires_outside": L.wires_outside(s.polylines),
                     "hand_clear_mm": round(1000 * min(float(SEEN["hand_clear"]), 9.999), 1), "clear_s": round(SEEN["clear_s"], 2),
-                    "score": score({"outlet": s}), "demo_error": _DEMO.get("error") if _DEMO else None,
-                    "check_error": SEEN["error"]}), flush=True)
+                    "speed_mm_s": round(1000 * float(np.linalg.norm(s.lin_vel)), 1),
+                    "screw_turns": [round(float(v), 2) for v in THREAD.turns], "screw_started": list(THREAD.started),
+                    "bit_on_screw": list(THREAD.engaged),
+                    "screw_head_mm": [round(1000 * float(L.WALL_X - state(environment, n).pos[0] - S.HEAD_H / 2), 1)
+                                      for n in S.NAMES],
+                    "score": score({"outlet": s, **{n: state(environment, n) for n in S.NAMES}}),
+                    "demo_error": _DEMO.get("error") if _DEMO else None, "check_error": SEEN["error"],
+                    "thread_error": _THREAD["error"], "physics_errors": dict(PHYSICS_ERRORS) or None,
+                    "screw_moves": _SCREWS["log"], "screw_moves_error": _SCREWS["error"]}), flush=True)
         except Exception as err:  # noqa: BLE001 - logging must never stop a trial
             print(f"OUTLET log error: {type(err).__name__}: {err}", flush=True)
 
 
 def score(objects) -> float:
-    """Ready for its screws. 0 unless the outlet stands upright (within 15 degrees), every strap corner is within 15 mm
-    of the wall and every wire is inside the box: none more than 2 mm in front of the wall face (each wire's end at
-    its terminal aside: that is part of the outlet), none looped over the box's edge or trapped under the strap. Then 1.0 only if both screw tabs are within 3 mm of the box's screw holes and
-    it has been let go: both grippers at least 3 cm from the outlet and from every wire, and the outlet at rest (under
-    1 cm/s), for the last 2 s. Let go and in place but off its holes: 0.5. Still held, pressed or moving: 0."""
+    """0 unless the outlet stands upright (within 15 degrees), every strap corner is within 15 mm of the wall, every
+    wire is inside the box (none more than 2 mm in front of the wall face, each wire's end at its terminal aside; none
+    looped over the box's edge or trapped under the strap), and it has been let go: both grippers and the
+    screwdriver's tip at least 3 cm from the outlet and from every wire, and the outlet at rest (no corner of its strap
+    moved more than 1 mm), for the last 2 s. Then: 0.25 if a strap slot is more than 3 mm off its boss hole; 0.5 with both slots on their holes
+    and no screw driven home; 0.75 with one screw home; 1.0 with both. A screw is home when its head is down on the
+    strap with that end of the strap on the wall (the head's underside within 1 mm of the strap's thickness off the
+    wall)."""
     s = objects.get("outlet")
     if s is None:
         return 0.0
-    speed = float(np.linalg.norm(s.lin_vel)) if getattr(s, "lin_vel", None) is not None else 0.0
-    return L.task_score(s.pos, s.quat_xyzw, s.polylines, SEEN["hand_clear"], speed, SEEN["clear_s"])
+    seated = L.task_score(s.pos, s.quat_xyzw, s.polylines, SEEN["hand_clear"], 0.0, SEEN["clear_s"])  # at rest: in clear_s
+    heads = [objects.get(n) for n in S.NAMES]
+    homes = S.screws_home([h.pos for h in heads]) if all(h is not None for h in heads) else 0
+    return S.task_score(seated, homes)
 
 
 def success(objects) -> bool:
@@ -258,6 +368,14 @@ def demo():
     tr = L.trial(DEMO_TRIAL)
     steps = L.trial_plan(tr)
     way = plan_waypoints(steps)
+    wires_s = L.plan_seconds(steps)
+    # The screw part. The left hand's targets are set step by step (_screw_control). The right hand ends the wire
+    # part in front of the outlet, where the screwdriver has to pass, so it goes straight back to its ready pose.
+    way["left"] = [*way["left"], ready_pose("left", duration=SCREWS_S, label="drive the screws")]
+    way["right"] = [*way["right"], ready_pose("right", duration=RIGHT_CLEAR_S, label="back to ready"),
+                    ready_pose("right", duration=SCREWS_S - RIGHT_CLEAR_S, label="wait")]
+    SCREW_MOVES.reset()
+    _SCREWS.update(t0=wires_s, error=None, log=None)
     _DEMO.clear()
     _DEMO.update(
         tr=tr, steps=steps, way=way,
@@ -265,6 +383,49 @@ def demo():
         g={"twist": 0.0, "x": None, "frozen_s": 0.0, "started": False}, corr=np.zeros(3), corr_l=np.zeros(3),
         face_snap=None, error=None)
     return way
+
+
+SCREWS_S = 100.0  # the longest the screw part may take (s)
+RIGHT_CLEAR_S = 2.5  # the right hand is back at its ready pose this long into the screw part (s)
+SCREW_MOVES = screw_moves.ScrewMoves()
+_SCREWS: dict = {"t0": None, "error": None, "log": None}
+
+
+def _right_to_ready(t: float) -> None:
+    """The right hand through the screw part, one control step: back to its ready pose, as the plan was written. It
+    has to be set step by step like the left hand's target: the wire part's last step writes the right hand's place
+    in front of the outlet into the waypoint that follows it, so left to the plan it would stay in the screwdriver's
+    way."""
+    pos, rot, finger, _ = _DEMO["plan"]["right"].target(t)
+    _play("right", t, pos, rot, finger)
+
+
+def _screw_control(environment, t: float) -> None:
+    """The demo's screw part, one control step: send the right hand back to its ready pose, then read the left hand,
+    the screwdriver and the screws, and set the left hand's next target (screw_moves.py)."""
+    _right_to_ready(t)
+    from labkit import _np, rolled
+    from yam_arena.runtime import tcp_world
+
+    base = environment.unwrapped
+    origin = _np(base.scene.env_origins)[0][:3]
+    tcp = np.asarray(tcp_world(base.scene["left_robot"]), float).reshape(-1)[:3] - origin
+    drv = state(environment, "screwdriver")
+    rot = L._rot(drv.quat_xyzw)
+    tip = np.asarray(drv.pos, float) + rot @ S.DRIVER_TIP
+    out = state(environment, "outlet")
+    tops = []
+    for i in range(2):
+        under, axis, _ = THREAD.pose(out.pos, out.quat_xyzw, i)
+        tops.append(under - axis * S.HEAD_H)
+    pos, roll, finger, label = SCREW_MOVES.step(tcp, drv.pos, tip, tops, list(THREAD.engaged),
+                                                [THREAD.home(0), THREAD.home(1)])
+    _play("left", t, pos, rolled(forward_grip(0.0), roll), finger)
+    i = SCREW_MOVES.screw
+    _SCREWS["log"] = {"stage": label, "roll": round(float(roll), 1), "tcp_err_mm": [round(1000 * float(v), 1) for v in pos - tcp],
+                      "tip_to_head_mm": [round(1000 * float(v), 1) for v in tip - tops[i]],
+                      "tool_off_deg": round(math.degrees(math.acos(max(-1.0, min(1.0, float(rot[0, 0]))))), 1),
+                      "handle_mm": [round(1000 * float(v), 1) for v in drv.pos]}
 
 
 def _play(arm: str, t: float, pos, rot, finger) -> None:
@@ -288,6 +449,17 @@ def _demo_control(environment) -> None:
     if environment is None or not _DEMO:
         return
     d = _DEMO
+    if _SCREWS["t0"] is not None:
+        try:
+            from labkit import trial_time as _now
+
+            t_next = (int(round(_now() * CONTROL_HZ)) + 1) / CONTROL_HZ
+            if t_next > _SCREWS["t0"]:
+                _screw_control(environment, t_next)
+                return
+        except Exception as err:  # noqa: BLE001
+            _SCREWS["error"] = f"{type(err).__name__}: {err}"
+            return
     try:
         import dataclasses
 
@@ -347,9 +519,10 @@ def _demo_control(environment) -> None:
             if rest_s > 1e-9:
                 left_new.append((rest_s, None, "open", "ready", "wait"))
             new_way = plan_waypoints({"left": left_new})["left"]
-            if [w.duration for w in new_way] != [w.duration for w in d["way"]["left"]]:
+            # Only the wire part is re-aimed: what the plan holds after it (the screw part's waypoint) stays as it is.
+            if [w.duration for w in new_way] != [w.duration for w in d["way"]["left"][:len(new_way)]]:
                 raise ValueError("the re-aimed left plan's step times differ from the plan the policy holds")
-            left.waypoints = new_way
+            left.waypoints = [*new_way, *left.waypoints[len(new_way):]]
             g["aimed"] = aimed + 1
         # -- the left hand: follow the wire sideways during a sweep; a lean stops once the loop is near the centre
         if getattr(tr, "track", False):

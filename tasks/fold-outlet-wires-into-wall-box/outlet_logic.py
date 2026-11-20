@@ -349,7 +349,8 @@ def wires_outside(polylines: dict) -> list:
 CLEAR = 0.03  # every gripper point (TCP and pad tips, both arms) at least this far from the outlet: it was let go
 NEAR_GAP = 0.015  # partial credit: the strap within 15 mm of the wall at every corner, the body mostly in the box
 UPRIGHT_DEG = 15.0  # the outlet's long axis within this of vertical (an outlet turned over or sideways scores 0)
-STILL_SPEED = 0.01  # m/s: the outlet must be at rest for credit
+STILL_SPEED = 0.01  # m/s: the outlet must be at rest for credit (task_score's own check, for a speed handed to it)
+STILL_MOVE = 0.001  # m: at rest means no corner of the strap further than this from where it was (rest_count)
 
 
 def device_hull() -> tuple:
@@ -395,6 +396,17 @@ def wire_clearance(points, polylines: dict) -> float:
         near = a[None] + t[..., None] * ab[None]
         best = min(best, float(np.min(np.linalg.norm(pts[:, None, :] - near, axis=2))))
     return best
+
+
+def rest_count(count_s: float, anchor, corners, hand_clear: float, dt: float):
+    """How long the outlet has been let go and at rest, one control step on: (seconds, the strap corners the count
+    is measured from). It is at rest while no corner of its strap is more than STILL_MOVE from where it was when the
+    count began, the way a ruler would show it; a gripper within CLEAR, or a corner that has moved, starts the count
+    again from here. (The simulator's own speed reading is not used: it flickers on a body that is going nowhere.)"""
+    corners = np.asarray(corners, float)
+    if anchor is not None and hand_clear >= CLEAR and float(np.max(np.linalg.norm(corners - anchor, axis=1))) <= STILL_MOVE:
+        return count_s + dt, anchor
+    return 0.0, corners
 
 
 def task_score(device_pos, device_quat, polylines: dict, hand_clear: float, speed: float = 0.0,

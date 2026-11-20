@@ -67,6 +67,11 @@ Added for rearm-wound-drain-bulb (14 Nov 2026, offline only; not yet in the kit'
   every control step). The first GPU run must check that it spawns straight and stable, that the loop-closing
   terminal joints hold, which joint style ("d6" or "alternate") Isaac Lab accepts, and that a bend stays bent.
 
+- :class:`Harness` ``looks`` and :class:`Part` ``metallic`` (added 2026-11-19; offline checks only, not yet run in
+  Isaac Sim): ``looks`` are :class:`Part` meshes drawn on the device and never colliders (a screw slot drawn on a
+  strap); ``metallic`` is the look's metalness, passed to the surface only when it is not 0. The first GPU run must
+  check that the harness spawns as before with looks on it and how a metallic part renders.
+
 Status (2026-11-07): Container, Button and Lamp come from a draft task and pass offline checks only; Marked and
 Model are new. None has run in Isaac Sim yet: the first GPU session must check that each one spawns.
 Added 2026-11-09 (offline checks only): Lamp ``group`` with :func:`set_lamp_group` / :func:`lit_group`,
@@ -95,13 +100,14 @@ from yam_arena.task_file import Box, ObjectState
 from yam_arena.urdf import axis_angle_matrix, quat_xyzw_to_matrix
 
 __all__ = [
-    "Bottle", "Branch", "Button", "ButtonState", "Container", "Hand", "HandState", "Hinge", "HingeState", "Lamp",
+    "Bottle", "Branch", "Built", "Button", "ButtonState", "Container", "Hand", "HandState", "Hinge", "HingeState", "Lamp",
     "Latch", "Mark", "Marked", "Model", "Part", "Pose", "Prop", "Slider", "SliderState", "Towel", "TowelState", "Trial",
     "all_resting", "count_inside", "cylinder_mesh", "ellipsoid_mesh", "forward_grip", "glove_on", "handed_over",
     "HangingBulb", "BulbState", "Harness", "HarnessPart", "HarnessState", "HarnessWire", "harness_rest",
     "plastic_targets", "hinge_step", "hold_joint", "hold_slider", "inside", "release_joint", "lamp_group_at", "lamp_switches", "lifted", "lit_group", "moved", "on_reset",
     "on_step", "ready_pose", "release_slider", "rolled", "scale_part", "set_glove", "set_lamp_group",
     "switch_lamp_group", "tick", "tilt_deg", "trial_seed", "trial_time", "tube_mesh",
+    "on_physics", "place", "push", "push_link_all",
 ]
 
 Color = tuple[float, float, float]
@@ -847,6 +853,7 @@ class Part:
     color: Color = (0.7, 0.7, 0.7)
     collides: bool = False
     roughness: float = 0.5
+    metallic: float = 0.0  # 0: plastic, paint; 1: bare metal (it then shows its surroundings more than its colour)
 
 
 @dataclass(frozen=True)
@@ -862,6 +869,33 @@ class Prop(Box):
         super()._check()
         if self.mass is not None:
             raise ValueError(f"{self.name}: a prop is fixed (no mass)")
+        names = [p.name for p in self.parts]
+        if len(set(names)) != len(names) or not all(n.isidentifier() for n in names):
+            raise ValueError(f"{self.name}: part names must be unique identifiers")
+        for p in self.parts:
+            _check_mesh(f"{self.name}.{p.name}", p.mesh)
+
+
+@dataclass(frozen=True)
+class Built(Box):
+    """A rigid body made in code (a hand tool, a screw): its own box (``size``, a collider, in ``color``) plus
+    :class:`Part` meshes, each visual only unless it ``collides`` (then a convex-hull collider on the same body).
+    ``pos`` is the box's centre and the body's origin; it needs a ``mass``. ``driven`` makes it kinematic: it collides
+    and pushes other things but never moves by itself, only where task code puts it with :func:`place` (from an
+    :func:`on_physics` hook, every physics step); its mass is then unused. ``friction`` is (static, dynamic) in place
+    of the kit's grippy default."""
+
+    parts: tuple = ()
+    driven: bool = False
+    friction: tuple | None = None
+    apart_from: tuple = ()  # names of other bodies this one never collides with (task code stands in for that contact)
+    friction_mix: str | None = None  # how its friction combines with what it touches ("min": the lower of the two
+    #                                  wins, so with friction (0, 0) it slides on everything); None: PhysX's average
+
+    def _check(self) -> None:
+        super()._check()
+        if self.mass is None:
+            raise ValueError(f"{self.name}: a built body needs a mass (a driven one too: it is how its pose is read)")
         names = [p.name for p in self.parts]
         if len(set(names)) != len(names) or not all(n.isidentifier() for n in names):
             raise ValueError(f"{self.name}: part names must be unique identifiers")
@@ -1054,6 +1088,9 @@ class Harness(Box):
     # The plastic curvature (1/m) every joint starts with, wire by wire from the cable to the outlet: the bends of the
     # start shape (old folds start work-hardened). Empty: every joint starts soft.
     hardened0: tuple = ()
+    # :class:`Part` meshes drawn on the device (device frame): looks only, never colliders (a screw slot drawn on a
+    # strap, a label). They add nothing to the device's shape, mass or state.
+    looks: tuple = ()
 
     @property
     def free(self) -> bool:
@@ -1078,6 +1115,12 @@ class Harness(Box):
         names = [w.name for w in self.wires]
         if len(set(names)) != len(names) or any(w.segments < 2 for w in self.wires):
             raise ValueError(f"{self.name}: wire names must be unique and each wire needs at least 2 links")
+        taken = {*names, *(p.name for p in self.parts), "physics", "wire_physics"}
+        for p in self.looks:
+            if p.collides or p.name in taken or not p.name.isidentifier():
+                raise ValueError(f"{self.name}: look {p.name!r} must be drawn only (collides=False), with a name of its own")
+            taken.add(p.name)
+            _check_mesh(f"{self.name}.{p.name}", p.mesh)
         for w in self.wires:
             if w.points is None:
                 continue
@@ -1191,7 +1234,7 @@ def plastic_targets(q, target, theta_y: float) -> np.ndarray:
     return np.clip(target, q - theta_y, q + theta_y)
 
 
-KitObject = Container | Marked | Model | Button | Lamp | Hinge | Slider | Hand | Towel | Prop | HangingBulb | Harness
+KitObject = Container | Marked | Model | Button | Lamp | Hinge | Slider | Hand | Towel | Prop | HangingBulb | Harness | Built
 
 
 # -- scoring helpers ---------------------------------------------------------------------------------------------------
@@ -1441,6 +1484,129 @@ def state(environment, name: str):
     return _state(environment, _SPECS[name])
 
 
+_PHYSICS: list = []
+PHYSICS_ERRORS: dict = {}  # what failed in place()/push(), by name: the first error of each kind, for the task's log
+
+
+def on_physics(fn):
+    """Run ``fn(environment)`` before every physics step (the simulator takes several per control step): for task
+    code that stands in for a mechanism and must keep up with moving bodies (a screw riding on a part, a thread).
+    It needs at least one :class:`Built` body in the scene (the hook rides on its ``write_data_to_sim``, which Isaac
+    Lab calls before each physics step)."""
+    _PHYSICS.append(fn)
+    return fn
+
+
+def _hook_physics(environment) -> None:
+    if not _PHYSICS:
+        return
+    base = environment.unwrapped
+    name = next((n for n, sp in _SPECS.items() if isinstance(sp, Built)), None)
+    if name is None:
+        return
+    anchor = base.scene[name]
+    if getattr(anchor, "_labkit_physics", False):
+        return
+    orig = anchor.write_data_to_sim
+
+    def write(*args, **kwargs):
+        out = orig(*args, **kwargs)
+        for fn in _PHYSICS:
+            fn(environment)
+        return out
+
+    anchor.write_data_to_sim = write
+    anchor._labkit_physics = True
+
+
+def place(environment, name: str, pos, quat_xyzw) -> bool:
+    """Put :class:`Built` body ``name`` at ``pos`` (world, m) turned by ``quat_xyzw``, now. For a ``driven`` body
+    this is how it moves. Returns False (and notes why in PHYSICS_ERRORS) if the simulator refused."""
+    import torch
+
+    base = environment.unwrapped
+    asset = base.scene[name]
+    origin = _np(base.scene.env_origins)[0]
+    pose = torch.tensor([[*(np.asarray(pos, float) + origin[:3]), *np.asarray(quat_xyzw, float)]], dtype=torch.float32,
+                        device=base.device)
+    err = None
+    for fn_name in ("write_root_link_pose_to_sim_index", "write_root_pose_to_sim_index", "write_root_link_pose_to_sim",
+                    "write_root_pose_to_sim"):
+        fn = getattr(asset, fn_name, None)
+        if fn is None:
+            continue
+        for call in (lambda f=fn: f(root_pose=pose), lambda f=fn: f(pose)):
+            try:
+                call()
+                return True
+            except Exception as exc:  # noqa: BLE001 - try the next spelling of the same write
+                err = exc
+    PHYSICS_ERRORS.setdefault(f"place {name}", f"{type(err).__name__}: {err}" if err else "no pose writer found")
+    return False
+
+
+def push(environment, name: str, force, at) -> bool:
+    """Push free :class:`Built` body ``name`` with ``force`` (N, world) at world point ``at`` for the coming physics
+    step. Returns False (and notes why in PHYSICS_ERRORS) if the simulator refused."""
+    base = environment.unwrapped
+    asset = base.scene[name]
+    origin = _np(base.scene.env_origins)[0][:3]
+    force = np.asarray(force, float)
+    try:
+        import warp as wp
+
+        com = _np(asset.data.body_com_pos_w)[0].reshape(-1)[:3] - origin if hasattr(asset.data, "body_com_pos_w") \
+            else _np(asset.data.root_link_pose_w)[0][:3] - origin
+        torque = np.cross(np.asarray(at, float) - com, force)
+        asset.root_view.apply_forces_and_torques_at_position(
+            force_data=wp.array(force.astype(np.float32), dtype=wp.float32, device=base.device),
+            torque_data=wp.array(torque.astype(np.float32), dtype=wp.float32, device=base.device),
+            position_data=None, indices=asset._ALL_INDICES, is_global=True)
+        return True
+    except Exception as exc:  # noqa: BLE001 - a push is an assist: the trial goes on without it
+        PHYSICS_ERRORS.setdefault(f"push {name}", f"{type(exc).__name__}: {exc}")
+        return False
+
+
+def push_link(environment, name: str, link: int, force, at) -> bool:
+    """Push link number ``link`` (its place in the body's ``body_names``) of jointed body ``name`` with ``force`` (N,
+    world) at world point ``at`` for the coming physics step. Returns False (and notes why in PHYSICS_ERRORS) if the
+    simulator refused."""
+    return push_link_all(environment, name, link, [(force, at)])
+
+
+def push_link_all(environment, name: str, link: int, pushes) -> bool:
+    """Several pushes [(force, world point), ...] on one link of jointed body ``name`` for the coming physics step, sent
+    as one force and one torque. An empty list sends none (which clears the last one)."""
+    base = environment.unwrapped
+    asset = base.scene[name]
+    origin = _np(base.scene.env_origins)[0][:3]
+    try:
+        import warp as wp
+
+        n = len(asset.body_names)
+        com = _np(asset.data.body_com_pos_w)[0].reshape(n, -1)[link][:3] - origin
+        forces, torques = np.zeros((n, 3), np.float32), np.zeros((n, 3), np.float32)
+        for f, p in pushes:  # summed: a second call in the same physics step would replace the first one's force
+            f = np.asarray(f, float)
+            forces[link] += f
+            torques[link] += np.cross(np.asarray(p, float) - com, f)
+        err = None
+        for shape in ((n * 3,), (n, 3), (1, n, 3)):  # the tensor API takes one of these for a jointed body
+            try:
+                asset.root_view.apply_forces_and_torques_at_position(
+                    force_data=wp.array(forces.reshape(shape), dtype=wp.float32, device=base.device),
+                    torque_data=wp.array(torques.reshape(shape), dtype=wp.float32, device=base.device),
+                    position_data=None, indices=asset._ALL_INDICES, is_global=True)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                err = exc
+        raise err
+    except Exception as exc:  # noqa: BLE001 - a push is an assist: the trial goes on without it
+        PHYSICS_ERRORS.setdefault(f"push_link {name}", f"{type(exc).__name__}: {exc}")
+        return False
+
+
 def _joints(spec) -> tuple:
     """The joint names of a jointed kit object, in the order its docs give them."""
     if isinstance(spec, HangingBulb):
@@ -1614,12 +1780,13 @@ class Trial(dict):
 # -- Arena objects (Isaac Sim) ----------------------------------------------------------------------------------------
 
 
-def _look(stage, path: str, color: Color, roughness: float = 0.5) -> str:
+def _look(stage, path: str, color: Color, roughness: float = 0.5, metallic: float = 0.0) -> str:
     import isaaclab.sim as sim_utils
 
     from yam_arena.station import linear_rgb
 
-    vis = sim_utils.PreviewSurfaceCfg(diffuse_color=linear_rgb(color), roughness=roughness)
+    metal = {"metallic": float(metallic)} if metallic else {}  # only named when asked for: other looks are as before
+    vis = sim_utils.PreviewSurfaceCfg(diffuse_color=linear_rgb(color), roughness=roughness, **metal)
     vis.func(path, vis)
     return path
 
@@ -1682,19 +1849,20 @@ def _prop_parts(prim_path: str, spec: Prop, translation=None, orientation=None):
     if spec.box_collider:
         _cube(stage, f"{prim_path}/collider", spec.size, (0.0, 0.0, 0.0), None, physics)
     for p in spec.parts:
-        look = _look(stage, f"{prim_path}/Looks/{p.name}", p.color, p.roughness)
+        look = _look(stage, f"{prim_path}/Looks/{p.name}", p.color, p.roughness, p.metallic)
         _mesh_prim(stage, f"{prim_path}/{p.name}", p.mesh, p.at, look, physics if p.collides else None)
     return root.GetPrim()
 
 
-def _grippy(prim_path: str, friction: tuple[float, float] | None = None) -> str:
+def _grippy(prim_path: str, friction: tuple[float, float] | None = None, mix: str | None = None) -> str:
     import isaaclab.sim as sim_utils
 
     from yam_arena.constants import GRIPPY_FRICTION
 
     static, dynamic = friction or GRIPPY_FRICTION
     physics = f"{prim_path}/Looks/physics"
-    grippy = sim_utils.RigidBodyMaterialCfg(static_friction=static, dynamic_friction=dynamic)
+    grippy = sim_utils.RigidBodyMaterialCfg(static_friction=static, dynamic_friction=dynamic,
+                                            **({"friction_combine_mode": mix} if mix else {}))
     grippy.func(physics, grippy)
     return physics
 
@@ -1730,6 +1898,23 @@ def _container_parts(prim_path: str, spec: Container) -> None:
         "right": ((sx, PROUD, band_h), (0.0, -(sy + PROUD) / 2, band_z)),
     }.items():
         _cube(stage, f"{prim_path}/band/{name}", size, at, label)
+
+
+def _built_parts(prim_path: str, spec: Built) -> None:
+    """A built body's meshes, on the body whose box is already spawned: visual, or convex colliders when marked."""
+    from isaaclab.sim.utils.stage import get_current_stage
+
+    stage = get_current_stage()
+    physics = _grippy(prim_path, spec.friction, spec.friction_mix)
+    for p in spec.parts:
+        look = _look(stage, f"{prim_path}/Looks/{p.name}", p.color, p.roughness, p.metallic)
+        _mesh_prim(stage, f"{prim_path}/{p.name}", p.mesh, p.at, look, physics if p.collides else None, offset=0.002)
+    if spec.apart_from:  # no contact between this body and those: PhysX filters the pair
+        from pxr import Sdf, UsdPhysics
+
+        pairs = UsdPhysics.FilteredPairsAPI.Apply(stage.GetPrimAtPath(prim_path)).CreateFilteredPairsRel()
+        for other in spec.apart_from:
+            pairs.AddTarget(Sdf.Path(f"{prim_path.rsplit('/', 1)[0]}/{other}"))
 
 
 def _mark_parts(prim_path: str, spec: Marked) -> None:
@@ -1948,7 +2133,7 @@ def _bulb_parts(prim_path: str, spec: HangingBulb, translation=None, orientation
     _cube(stage, f"{core}/port", spec.port, spec.port_offset, _look(stage, f"{prim_path}/Looks/port", spec.port_color),
           physics)
     for p in spec.parts:
-        look = _look(stage, f"{prim_path}/Looks/{p.name}", p.color, p.roughness)
+        look = _look(stage, f"{prim_path}/Looks/{p.name}", p.color, p.roughness, p.metallic)
         _mesh_prim(stage, f"{core}/{p.name}", p.mesh, p.at, look, physics if p.collides else None)
 
     def joint(kind, path, axis, body0, body1, at0, rot0, lower, upper, stiffness, damping, linear=False):
@@ -2113,6 +2298,9 @@ def _harness_parts(prim_path: str, spec: Harness, translation=None, orientation=
     for p in spec.parts:
         _cube(stage, f"{device}/{p.name}", p.size, p.at, _look(stage, f"{prim_path}/Looks/{p.name}", p.color),
               physics, offset=0.002)
+    for p in spec.looks:  # drawn only: no physics material is passed, so the mesh gets no collision API
+        _mesh_prim(stage, f"{device}/{p.name}", p.mesh, p.at,
+                   _look(stage, f"{prim_path}/Looks/{p.name}", p.color, p.roughness, p.metallic))
     import isaaclab.sim as sim_utils
 
     wire_physics = f"{prim_path}/Looks/wire_physics"  # insulation on plastic and on itself: less grippy than pads
@@ -2250,6 +2438,27 @@ def _arena_object(spec: KitObject):
             size=size, func=spawn_with_parts,
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=linear_rgb(spec.color), roughness=0.4), **body)
         return Object(name=spec.name, object_type=kind, spawner_cfg=cfg, initial_pose=pose)
+
+    if isinstance(spec, Built):
+
+        @clone
+        def spawn_built(prim_path: str, cfg, *args, **kwargs):
+            prim = spawn_cuboid.__wrapped__(prim_path, cfg, *args, **kwargs)  # the body and its own box
+            _built_parts(prim_path, spec)
+            return prim
+
+        static, dynamic = spec.friction or GRIPPY_FRICTION
+        cfg = sim_utils.CuboidCfg(
+            size=tuple(spec.size), func=spawn_built,
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=linear_rgb(spec.color), roughness=0.4),
+            collision_props=PhysxCollisionPropertiesCfg(contact_offset=0.002, rest_offset=0.0),
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=static, dynamic_friction=dynamic,
+                **({"friction_combine_mode": spec.friction_mix} if spec.friction_mix else {})),
+            rigid_props=PhysxRigidBodyPropertiesCfg(kinematic_enabled=True) if spec.driven
+            else PhysxRigidBodyPropertiesCfg(),
+            mass_props=sim_utils.MassPropertiesCfg(mass=spec.mass))
+        return Object(name=spec.name, object_type=ObjectType.RIGID, spawner_cfg=cfg, initial_pose=pose)
 
     if isinstance(spec, Model):
         cfg = sim_utils.UsdFileCfg(usd_path=spec.usd, scale=(spec.scale,) * 3, **{
@@ -2704,6 +2913,7 @@ def _after_reset(environment) -> None:
         fn()
     _show_lamps(environment, _LIT["on"])  # a timed switch due at 0 lights from the first frame
     _show_gloves(environment)
+    _hook_physics(environment)
 
 
 # -- hooking yam_arena ------------------------------------------------------------------------------------------------
