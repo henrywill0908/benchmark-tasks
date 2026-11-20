@@ -1,0 +1,23 @@
+{
+  "title": "Clean a dried syrup spill off a table with a spray bottle and a towel",
+  "category": "Impact on jobs",
+  "keywords": [
+    "bimanual",
+    "cloth",
+    "spray bottle",
+    "trigger",
+    "sticky spill",
+    "wiping",
+    "food service",
+    "tool use"
+  ],
+  "instruction": "Clean the dried syrup off the table.",
+  "context": "Wiping sticky spills off tables between guests is daily work for waiters and waitresses (O*NET 35-3031.00, about 2.3 million US workers: \"Clean tables or counters after patrons have finished dining\") and dining room and cafeteria attendants (35-9011.00). Dried syrup smears under a dry cloth, so they wet it from a trigger spray bottle first, then wipe it off with a towel. The hard parts are physical: working the trigger with one hand while tipping and aiming the bottle, then keeping a limp towel pressed flat as it creeps under the fingers, pass after pass.",
+  "setup": "Positions in cm from the midpoint between the two arm bases, on the table: x forward, y to the robot's left. (1) A spill of pure maple syrup (Grade A, dark colour), 10 cm across, centred at (37, 12), dried tacky on the table top: 10 g poured into a 10 cm card ring, spread to its edge, the ring lifted off, left 10 minutes at 20-24 C. (2) A clear 500 mL trigger spray bottle, 7 cm across and 22 cm tall, blue sprayer head, red trigger needing about 30 N for a full pull, with 200 mL of warm water, standing at (26, -10), nozzle and trigger facing away from the robot. (3) A white cotton bar towel folded once to 18 x 14 cm (long side away from the robot), 40 g, lying flat at (23, 28). Nothing else is on the table. The grippers' finger pads wear disposable nitrile finger cots, so no syrup or water reaches the robot.",
+  "scoring": "Before the trial, draw the spill's outline and a 2 cm grid over a 26 x 26 cm square centred on it on a clear acetate sheet; 19 grid squares lie inside the outline. After the trial, lay the sheet on the table and judge each square: clean when no syrup is visible in a photo taken straight down and a dry white tissue pressed on it for 1 s picks up no amber stain or stickiness. 0 if a gripper touched the syrup with no towel between, or the bottle or the towel ends off the table. Otherwise 0.25 when at least 5 of the 19 squares are clean, 0.5 at least 10, 0.75 all 19. 1.0 when all 19 are clean, no other square of the grid shows syrup, the bottle stands within 15 degrees of upright on the table, both grippers are at least 2 cm from the bottle and the towel, and nothing has moved more than 5 mm in the last second.",
+  "run_limit": "2,400 steps (2 minutes at 20 Hz)",
+  "reset_notes": "Wash and dry the table, make a fresh spill with the card ring as in the setup, refill the bottle to 200 mL, lay a dry folded towel on its mark, and put fresh finger cots on the pads.",
+  "fidelity": "Draft. Syrup is task code: a 1 cm field of syrup and water, drawn as a layer. A trigger squeeze past 8.5 mm wets the field where the nozzle's line meets the table. Pressed, moving towel cloth picks syrup up (readily once wet) and drags it along (a smear, when dry); a loaded towel leaves a film. Scored on 2 cm squares. The towel is PhysX cloth; the bottle and its sprung trigger are rigid. No fluid is simulated.",
+  "scores": "Dream-1 run: 0.0; demo: 1.0",
+  "media": "M-VDG6E3"
+}
