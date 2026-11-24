@@ -865,11 +865,15 @@ class Prop(Box):
 
     parts: tuple = ()
     box_collider: bool = False
+    friction: float | None = None  # its colliders' friction (None: the scene's rubbery default)
+    friction_combine: str = "average"  # "min": its own value wherever that is the lower one
 
     def _check(self) -> None:
         super()._check()
         if self.mass is not None:
             raise ValueError(f"{self.name}: a prop is fixed (no mass)")
+        if self.friction is not None and self.friction < 0:
+            raise ValueError(f"{self.name}: friction can't be negative")
         names = [p.name for p in self.parts]
         if len(set(names)) != len(names) or not all(n.isidentifier() for n in names):
             raise ValueError(f"{self.name}: part names must be unique identifiers")
@@ -1207,6 +1211,23 @@ class CableTie(Box):
     armature: float = 5e-6
     max_bend: float = math.radians(60.0)
     friction: float = 0.9
+    friction_combine: str = "average"  # how the tie's friction combines with what it touches ("min": the tie's own
+    #                                    value wherever that is the lower one, so a slippery strap stays slippery on
+    #                                    a rubbery pad or cord)
+    head_friction: float | None = None  # the slot's walls and the pawl against the strap (None: ``friction``), by
+    #                                     "min": nylon on nylon, whatever the strap's own friction on a pad is. The
+    #                                     head's two finger faces then carry cheeks ``cheek`` thick with the strap's
+    #                                     friction, so a pad still holds the head as it holds the strap.
+    cheek: float = 0.0003
+    pawl_friction: float | None = None  # the pawl's plate against the strap (None: as the slot), combined by "max": a
+    #                                     pawl that wedges needs friction past the tangent of its angle to the
+    #                                     strap's normal (0.6 here); at nylon's 0.25 it only rubs
+    lead_in: float = 0.0  # m: a chamfer this deep and this wide round the slot's mouth, where the strap goes in (a real
+    #                       tie's lead-in). Without it a strap link whose end sits a hair below the wall it rides on
+    #                       butts against the head's face at the mouth: the draw stalls a link at a time.
+    lead_in_walls: tuple = ("back", "front", "side_pos", "side_neg")  # which of the slot's walls carry it
+    lead_in_mass: bool = True  # with a lead-in, pin the head's centre of mass and inertia to what its plain walls
+    #                            give (PhysX works them out from the colliders, so the lead-in's would shift them)
     fixed: bool = False
     pawl_hinge: tuple = (0.0011, 0.0, 0.0024)
     pawl_len: float = 0.0026
@@ -1227,6 +1248,10 @@ class CableTie(Box):
     # what holds a welded head, drawn. Each (name, "box", centre, size, color) or (name, "cyl", centre, (radius,
     # height, axis "X"/"Y"/"Z"), color), in the head frame (m).
     decor: tuple = ()
+    # Marks painted on the strap, drawn only (no colliders): each (distance from the strap's root along it in m, sRGB
+    # colour), a band ``mark_width`` long across the strap's full width.
+    marks: tuple = ()
+    mark_width: float = 0.0025
 
     @property
     def free(self) -> bool:
@@ -1779,15 +1804,20 @@ def _look(stage, path: str, color: Color, roughness: float = 0.5) -> str:
     return path
 
 
-def _cube(stage, path: str, size, at, look: str | None, physics: str | None = None, offset: float = 0.005) -> None:
+def _cube(stage, path: str, size, at, look: str | None, physics: str | None = None, offset: float = 0.005,
+          rot=None) -> None:
     """A box under a body: a collider (contacts from ``offset`` out) if ``physics`` (a physics material) is given,
-    else visual only."""
+    else visual only. ``rot`` (3x3, body frame) turns it about its centre."""
     from isaaclab.sim.utils import bind_physics_material, bind_visual_material
     from pxr import Gf, PhysxSchema, UsdGeom, UsdPhysics
 
     cube = UsdGeom.Cube.Define(stage, path)
     cube.CreateSizeAttr(1.0)
     cube.AddTranslateOp().Set(Gf.Vec3d(*(float(v) for v in at)))
+    if rot is not None:
+        from yam_arena import ik
+
+        cube.AddOrientOp().Set(_quatf(ik.matrix_to_quat_xyzw(np.asarray(rot, float))))
     cube.AddScaleOp().Set(Gf.Vec3f(*(float(v) for v in size)))
     if physics is not None:
         UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
@@ -1847,12 +1877,42 @@ def _prop_parts(prim_path: str, spec: Prop, translation=None, orientation=None):
     stage = get_current_stage()
     root = _root_xform(stage, prim_path, translation, orientation)
     physics = _grippy(prim_path)
+    if spec.friction is not None:
+        physics = _friction_material(stage, f"{prim_path}/Looks/physics_own", spec.friction, spec.friction_combine,
+                                     spec.name)
     if spec.box_collider:
         _cube(stage, f"{prim_path}/collider", spec.size, (0.0, 0.0, 0.0), None, physics)
     for p in spec.parts:
         look = _look(stage, f"{prim_path}/Looks/{p.name}", p.color, p.roughness)
         _mesh_prim(stage, f"{prim_path}/{p.name}", p.mesh, p.at, look, physics if p.collides else None)
     return root.GetPrim()
+
+
+def _friction_material(stage, path: str, friction: float, combine: str, who: str) -> str:
+    """A physics material at ``path`` with that friction, combined with what it touches by ``combine`` (PhysX takes
+    the stricter of two materials' modes: average, min, multiply, max, in that order)."""
+    import isaaclab.sim as sim_utils
+
+    mat = sim_utils.RigidBodyMaterialCfg(static_friction=friction, dynamic_friction=friction)
+    if combine != "average":
+        try:
+            mat = sim_utils.RigidBodyMaterialCfg(static_friction=friction, dynamic_friction=friction,
+                                                 friction_combine_mode=combine)
+        except TypeError:  # a cfg class without the field: the prim's attribute below does it
+            pass
+    mat.func(path, mat)
+    if combine != "average":
+        how = "cfg"
+        try:
+            from pxr import PhysxSchema
+
+            api = PhysxSchema.PhysxMaterialAPI.Apply(stage.GetPrimAtPath(path))
+            api.CreateFrictionCombineModeAttr().Set(combine)
+            how = str(api.GetFrictionCombineModeAttr().Get())
+        except Exception as err:  # noqa: BLE001 - the cfg's own setting stands
+            how = f"cfg only ({type(err).__name__}: {err})"
+        print(f"labkit: {who} friction {friction}, combined by {combine} ({how})", flush=True)
+    return path
 
 
 def _grippy(prim_path: str, friction: tuple[float, float] | None = None) -> str:
@@ -2379,9 +2439,10 @@ def _tie_parts(prim_path: str, spec: CableTie, translation=None, orientation=Non
     hb.CreateMaxDepenetrationVelocityAttr(spec.max_depenetration)
     hb.CreateLinearDampingAttr(spec.body_linear_damping)
     hb.CreateAngularDampingAttr(spec.body_angular_damping)
-    physics = f"{prim_path}/Looks/nylon"
-    mat = sim_utils.RigidBodyMaterialCfg(static_friction=spec.friction, dynamic_friction=spec.friction)
-    mat.func(physics, mat)
+    physics = _friction_material(stage, f"{prim_path}/Looks/nylon", spec.friction, spec.friction_combine, spec.name)
+    slot = physics  # the slot's walls and the pawl
+    if spec.head_friction is not None:
+        slot = _friction_material(stage, f"{prim_path}/Looks/nylon_slot", spec.head_friction, "min", f"{spec.name}'s slot")
     look_head = _look(stage, f"{prim_path}/Looks/head", spec.head_color, 0.6)
     look_strap = _look(stage, f"{prim_path}/Looks/strap", spec.color, 0.6)
     hx, hy, hz = spec.head_size
@@ -2392,8 +2453,62 @@ def _tie_parts(prim_path: str, spec: CableTie, translation=None, orientation=Non
         "side_pos": ((x1 - x0, hy / 2 - py, hz), ((x0 + x1) / 2, (hy / 2 + py) / 2, 0.0)),
         "side_neg": ((x1 - x0, hy / 2 - py, hz), ((x0 + x1) / 2, -(hy / 2 + py) / 2, 0.0)),
     }
+    c = spec.lead_in
+    if c > 0.0:  # the walls end ``c`` short of the mouth; lips set back by ``c`` finish the head's face; ramps between
+        if spec.lead_in_mass:  # the plain head's mass properties, said outright
+            solid = [(size, at) for size, at in walls.values()]
+            if spec.head_friction is not None:
+                solid += [((hx, spec.cheek, hz), (0.0, side * (hy + spec.cheek) / 2, 0.0)) for side in (1.0, -1.0)]
+            vol = sum(float(np.prod(size)) for size, _ in solid)
+            com = sum(float(np.prod(size)) * np.asarray(at, float) for size, at in solid) / vol
+            inertia = np.zeros(3)
+            for size, at in solid:
+                m = spec.head_mass * float(np.prod(size)) / vol
+                d = np.asarray(at, float) - com
+                sq = np.asarray(size, float) ** 2
+                inertia += m * (np.array([sq[1] + sq[2], sq[0] + sq[2], sq[0] + sq[1]]) / 12.0
+                                + np.array([d[1] ** 2 + d[2] ** 2, d[0] ** 2 + d[2] ** 2, d[0] ** 2 + d[1] ** 2]))
+            mass_api = UsdPhysics.MassAPI.Apply(stage.GetPrimAtPath(head))
+            mass_api.CreateCenterOfMassAttr(Gf.Vec3f(*(float(v) for v in com)))
+            mass_api.CreateDiagonalInertiaAttr(Gf.Vec3f(*(float(v) for v in inertia)))
+            mass_api.CreatePrincipalAxesAttr(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            print(f"labkit: {spec.name}'s head mass properties pinned: centre {[round(1000 * float(v), 3) for v in com]} mm, "
+                  f"inertia {[float(f'{v:.3e}') for v in inertia]} kg m2", flush=True)
+        on = set(spec.lead_in_walls)
+        walls = {name: (((sx, sy, hz - c), (ax, ay, -c / 2)) if name in on else ((sx, sy, sz), (ax, ay, az)))
+                 for name, ((sx, sy, sz), (ax, ay, az)) in walls.items()}
+        lips = {
+            "back_lip": ((x0 - c + hx / 2, hy, c), ((-hx / 2 + x0 - c) / 2, 0.0, (hz - c) / 2)),
+            "front_lip": ((hx / 2 - x1 - c, hy, c), ((hx / 2 + x1 + c) / 2, 0.0, (hz - c) / 2)),
+            "side_pos_lip": ((x1 - x0 + 2 * c, hy / 2 - py - c, c), ((x0 + x1) / 2, (hy / 2 + py + c) / 2, (hz - c) / 2)),
+            "side_neg_lip": ((x1 - x0 + 2 * c, hy / 2 - py - c, c), ((x0 + x1) / 2, -(hy / 2 + py + c) / 2, (hz - c) / 2)),
+        }
+        for name, (size, at) in lips.items():
+            if name[:-4] not in on:
+                continue
+            if min(size) <= 0.0:
+                raise ValueError(f"{spec.name}: lead_in {c} leaves no wall at {name}")
+            _cube(stage, f"{head}/{name}", size, at, look_head, slot, offset=off)
+        k, th, zc = 1.0 / math.sqrt(2.0), 0.0005, hz / 2 - c / 2
+        ramps = {  # name: (the face's normal, the box's second axis, the face's middle, the box's span along that axis)
+            "back_ramp": ((k, 0.0, k), (0.0, 1.0, 0.0), (x0 - c / 2, 0.0, zc), 2 * (py + c)),
+            "front_ramp": ((-k, 0.0, k), (0.0, 1.0, 0.0), (x1 + c / 2, 0.0, zc), 2 * (py + c)),
+            "side_pos_ramp": ((0.0, -k, k), (1.0, 0.0, 0.0), ((x0 + x1) / 2, py + c / 2, zc), x1 - x0 + 2 * c),
+            "side_neg_ramp": ((0.0, k, k), (1.0, 0.0, 0.0), ((x0 + x1) / 2, -(py + c / 2), zc), x1 - x0 + 2 * c),
+        }
+        for name, (n, second, mid, span) in ramps.items():
+            if name[:-5] not in on:
+                continue
+            n, second = np.asarray(n, float), np.asarray(second, float)
+            rot = np.column_stack([n, second, np.cross(n, second)])
+            _cube(stage, f"{head}/{name}", (th, span, c * math.sqrt(2.0)), np.asarray(mid, float) - n * th / 2,
+                  look_head, slot, offset=off, rot=rot)
     for name, (size, at) in walls.items():
-        _cube(stage, f"{head}/{name}", size, at, look_head, physics, offset=off)
+        _cube(stage, f"{head}/{name}", size, at, look_head, slot, offset=off)
+    if spec.head_friction is not None:  # the cheeks: what a pad on the head's two faces touches
+        for name, side in (("cheek_pos", 1.0), ("cheek_neg", -1.0)):
+            _cube(stage, f"{head}/{name}", (hx, spec.cheek, hz), (0.0, side * (hy + spec.cheek) / 2, 0.0), look_head,
+                  physics, offset=off)
     for name, kind, at, dims, color in spec.decor:  # visual only: no CollisionAPI, so PhysX never sees them
         look = _look(stage, f"{prim_path}/Looks/decor_{name}", color, 0.5)
         if kind == "box":
@@ -2423,8 +2538,11 @@ def _tie_parts(prim_path: str, spec: CableTie, translation=None, orientation=Non
     pb = _rigid(stage, pawl, spec.pawl_hinge, rest, spec.pawl_mass)
     pb.CreateMaxDepenetrationVelocityAttr(spec.max_depenetration)
     length = spec.pawl_len + spec.pawl_radius
+    grip = slot
+    if spec.pawl_friction is not None:
+        grip = _friction_material(stage, f"{prim_path}/Looks/pawl_grip", spec.pawl_friction, "max", f"{spec.name}'s pawl")
     _cube(stage, f"{pawl}/plate", (2 * spec.pawl_radius, spec.pawl_width, length), (0.0, 0.0, -length / 2),
-          look_head, physics, offset=off)
+          look_head, grip, offset=off)
     d = revolute(f"{pawl}/pawl", head, pawl, spec.pawl_hinge, rest, (0.0, 0.0, 0.0), -spec.pawl_rest, 0.0)
     d.CreateStiffnessAttr(spec.pawl_spring * math.pi / 180)
     d.CreateDampingAttr(spec.pawl_damping * math.pi / 180)
@@ -2439,6 +2557,11 @@ def _tie_parts(prim_path: str, spec: CableTie, translation=None, orientation=Non
         tip = i == spec.n_links - 1
         size = (2 * half, spec.tip_width if tip else spec.width, spec.tip_thick if tip else spec.thick)
         _cube(stage, f"{path}/box", size, (0.0, 0.0, 0.0), look_strap, physics, offset=off)
+        for k, (s_mark, color) in enumerate(spec.marks):  # visual only, on the link the mark falls on
+            if 2 * half * i <= s_mark < 2 * half * (i + 1):
+                look = _look(stage, f"{prim_path}/Looks/mark_{k}", color, 0.5)
+                _cube(stage, f"{path}/mark_{k}", (spec.mark_width, size[1] + 0.0004, size[2] + 0.0004),
+                      (float(s_mark) - 2 * half * i - half, 0.0, 0.0), look)
         if i == 0:
             drive = revolute(f"{path}/{spec.joint_name(i)}", head, path, spec.points[0], frames[0], (-half, 0.0, 0.0),
                              -spec.max_bend, spec.max_bend)

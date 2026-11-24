@@ -93,21 +93,164 @@ def test_a_tie_with_uneven_or_twisted_links_is_rejected():
         type(tie)(**{**tie.__dict__, "points": tuple(map(tuple, stretched))})._check()
 
 
-def test_a_snug_tie_scores_full_through_score():
+def _lying_tie(ring_mm: float, tail_mm: float = 150.0, cord_out: bool = False):
+    """A hand-built tie closed round the lying cords (world): the head beside the bundle, its root down and its exit
+    toward -y, the strap under the cords, up their far side and back over them into the entry on a circle ``ring_mm``
+    in radius, ``tail_mm`` of tail out. Returns (polyline, head centre, head quaternion, the cords' polylines)."""
+    hr = L.head_rot_pitched(90.0)
+    centre = np.array([0.33, 0.100, L.TOP + ring_mm * L.MM + 0.002])
+    hc = centre + np.array([0.0, -ring_mm * L.MM - 0.004, 0.004])
+    root = hc + hr @ L.ROOT
+    entry = hc + hr @ np.array([L.SLOT_C, 0.0, L.ENTRY_Z + 0.001])
+    exit_ = hc + hr @ np.array([L.SLOT_C, 0.0, L.EXIT_Z])
+    tip = exit_ + hr @ np.array([0.0, 0.0, -tail_mm * L.MM])
+    a = np.linspace(math.radians(215.0), math.radians(215.0 + 300.0), 40)  # from below the root, under, round, over
+    ring = centre + ring_mm * L.MM * np.column_stack([np.zeros_like(a), np.cos(a), np.sin(a)])
+    poly = np.vstack([root, ring, entry, exit_, tip])
+    cords = {}
+    for k, (name, *_rest) in enumerate(L.LIFT_CORDS):
+        y = centre[1] + 0.003 * (k - 1) + (0.060 if cord_out and k == 0 else 0.0)
+        cords[name] = np.array([[0.20, y, centre[2]], [0.45, y, centre[2]]])
+    return poly, hc, L.matrix_to_quat_xyzw(hr), cords
+
+
+class _Cords:
+    def __init__(self, polylines):
+        self.polylines = polylines
+
+
+def test_the_lying_cords_score_reads_the_marks_on_the_strap():
+    """Round 26's scorer: closed round all three cords, hands clear and still; then 1.0 with the full mark out of the
+    head, 0.5 with the half mark out, 0.25 otherwise; 0 round two cords only, with a gripper near or while moving."""
+    def scored(ring_mm, hand=0.05, speed=0.0, **kw):
+        poly, hc, q, cords = _lying_tie(ring_mm, **kw)
+        return L.lift_score(poly, hc, q, cords, hand, speed), poly, hc, q
+
+    tight, poly, hc, q = scored(7.0)
+    th = L.threading(poly, hc, q)
+    full, half = L.lift_marks(L.arc_length(poly))
+    assert tight == 1.0 and th.through == pytest.approx(0.150, abs=1e-6) and th.through >= full
+    loose, poly, hc, q = scored(10.0)
+    full, half = L.lift_marks(L.arc_length(poly))
+    assert loose == 0.5 and half <= L.threading(poly, hc, q).through < full
+    assert scored(18.0)[0] == 0.25
+    assert scored(7.0, cord_out=True)[0] == 0.0  # one cord beside the loop
+    assert scored(7.0, hand=0.02)[0] == 0.0 and scored(7.0, speed=0.02)[0] == 0.0
+    assert scored(7.0, tail_mm=1.0)[0] == 0.0  # the tip barely through: not closed
+    # the marks sit halfway between two of the 6.25 mm steps the tail rests at, 3.1 mm from either
+    for mark in L.lift_marks(L.BUILDS["lift25"].tie_l):
+        k = mark / L.LINK
+        assert abs(k - round(k)) == pytest.approx(0.5, abs=1e-6)
+    assert L.lift_marks(0.250) == pytest.approx((0.184375, 0.165625), abs=1e-9)
+    if M.BUILD == "lift25":
+        assert [round(1000 * (0.250 - s), 1) for s, _ in M.TIE.marks] == [184.4, 165.6]
+
+
+def _hanging_tie(ring_mm: float, cord_out: bool = False, z: float = 0.140):
+    """A hand-built 370 mm tie closed round the hanging cords (world): a level ring ``ring_mm`` in radius about the
+    bundle, the head in front of it, whatever the ring leaves of the strap out of the head as the tail. Returns
+    (polyline, head centre, head quaternion)."""
+    turn = np.array([[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]])  # _lying_tie's frame stood on end
+    hr = L.head_rot_pitched(90.0)
+    r = ring_mm * L.MM
+    hc = np.array([0.0, -r - 0.004, 0.004])
+    root = hc + hr @ L.ROOT
+    entry = hc + hr @ np.array([L.SLOT_C, 0.0, L.ENTRY_Z + 0.001])
+    exit_ = hc + hr @ np.array([L.SLOT_C, 0.0, L.EXIT_Z])
+    a = np.linspace(math.radians(215.0), math.radians(515.0), 40)
+    ring = r * np.column_stack([np.zeros_like(a), np.cos(a), np.sin(a)])
+    loop = np.vstack([root, ring, entry, exit_])
+    tail = L.BUILDS["hang37"].tie_l - L.arc_length(loop)
+    poly = np.vstack([loop, exit_ + hr @ np.array([0.0, 0.0, -tail])])
+    centre = np.array([np.mean([c.xy[0] for c in L.CORDS]) + (0.060 if cord_out else 0.0),
+                       np.mean([c.xy[1] for c in L.CORDS]), L.TOP + z])
+    return centre + poly @ turn.T, centre + turn @ hc, L.matrix_to_quat_xyzw(turn @ hr)
+
+
+def test_the_task_scores_the_hanging_cords_by_the_marks_through_score():
+    """Round 38, the task: closed round all three hanging cords, hands clear and still; then 1.0 with the full mark
+    out of the head, 0.5 with the half mark out, 0.25 otherwise."""
     from labkit import CableTieState
 
-    near = L.tie_near_build(L.BUILDS["jig"])
-    poly = L.synthetic_tie(near)
-    s = CableTieState(pos=np.asarray(near.head_pos), quat_xyzw=L.matrix_to_quat_xyzw(near.head_rot),
-                      lin_vel=np.zeros(3), ang_vel=np.zeros(3), low=poly.min(0), high=poly.max(0), polyline=poly,
-                      pawl_angle=1.0, link_speed_max=0.0)
+    full, half = L.lift_marks(L.BUILDS["hang37"].tie_l)
+    assert (full, half) == pytest.approx((0.290, 0.270), abs=1e-9)  # whole millimetres from the tip (round 48)
+    got = {}
+    for ring in (9.0, 12.5, 20.0):
+        poly, hc, q = _hanging_tie(ring)
+        got[ring] = (L.hang_score(poly, hc, q, 0.05, 0.0), L.threading(poly, hc, q).through)
+        assert L.arc_length(poly) == pytest.approx(L.BUILDS["hang37"].tie_l, abs=1e-9)
+    assert got[9.0][0] == 1.0 and got[9.0][1] >= full
+    assert got[12.5][0] == 0.5 and half <= got[12.5][1] < full
+    assert got[20.0][0] == 0.25 and got[20.0][1] < half
+    poly, hc, q = _hanging_tie(9.0)
+    assert L.hang_score(poly, hc, q, 0.02, 0.0) == 0.0 and L.hang_score(poly, hc, q, 0.05, 0.02) == 0.0
+    out = _hanging_tie(9.0, cord_out=True)
+    assert L.hang_score(*out, 0.05, 0.0) == 0.0  # the loop closed beside the cords
+    if M.BUILD != "hang37":
+        return
+    assert [round(1000 * (L.BUILDS["hang37"].tie_l - s), 1) for s, _ in M.TIE.marks] == [290.0, 270.0]
+    s = CableTieState(pos=hc, quat_xyzw=q, lin_vel=np.zeros(3), ang_vel=np.zeros(3), low=poly.min(0), high=poly.max(0),
+                      polyline=poly, pawl_angle=1.0, link_speed_max=0.0)
     M.SEEN["hand_clear"] = 0.05
-    assert M.score({"tie": s}) == 1.0
+    assert M.score({"tie": s}) == 1.0 and M.success({"tie": s})
     s2 = CableTieState(**{**s.__dict__, "link_speed_max": 0.02})
     assert M.score({"tie": s2}) == 0.0
     M.SEEN["hand_clear"] = 0.01
     assert M.score({"tie": s}) == 0.0
     M._new_trial()
+
+
+@pytest.mark.skipif(M.BUILD not in L.LIFT_BUILDS, reason="the lying cords of rounds 19-30 (TIE_BUILD=lift25)")
+def test_the_task_scores_the_lying_cords_through_score():
+    from labkit import CableTieState
+
+    poly, hc, q, cords = _lying_tie(7.0)
+    s = CableTieState(pos=hc, quat_xyzw=q, lin_vel=np.zeros(3), ang_vel=np.zeros(3), low=poly.min(0), high=poly.max(0),
+                      polyline=poly, pawl_angle=1.0, link_speed_max=0.0)
+    M.SEEN["hand_clear"] = 0.05
+    assert M.score({"tie": s, "cords": _Cords(cords)}) == 1.0 and M.success({"tie": s, "cords": _Cords(cords)})
+    assert M.score({"tie": s}) == 0.0  # no cords to check: no credit
+    s2 = CableTieState(**{**s.__dict__, "link_speed_max": 0.02})
+    assert M.score({"tie": s2, "cords": _Cords(cords)}) == 0.0
+    M.SEEN["hand_clear"] = 0.01
+    assert M.score({"tie": s, "cords": _Cords(cords)}) == 0.0
+    M._new_trial()
+
+
+@pytest.mark.skipif(M.BUILD not in L.LIFT_BUILDS, reason="the lying cords of rounds 19-30 (TIE_BUILD=lift25)")
+def test_the_keys_start_ends_with_the_head_held_by_the_bundle_and_the_left_open():
+    """On the lying cords task.demo() plays tie_logic.KEYS_START: round 24's plan up to the head held by the bundle,
+    then nothing: no hand lets go or goes back to ready, so a person can carry on from there on the keyboard."""
+    tr = L.trial(M.TRIAL)
+    assert M.TRIAL == L.KEYS_START and tr.b_keys and tr.build == M.BUILD == "lift25" and tr in L.KEPT
+    plan = L.trial_plan(tr)
+    old = L.trial_plan(L.trial("l25-thread"))
+
+    def same(a, b):
+        return len(a) == len(b) and all(x[0] == y[0] and x[2] == y[2] and x[4] == y[4] and np.allclose(x[1], y[1])
+                                        and np.allclose(x[3], y[3]) for x, y in zip(a, b))
+
+    n = [s[4] for s in old["right"]].index("level head") + 1
+    assert same(plan["right"][:n], old["right"][:n])  # the right's steps as jobs 98 and 101 played them
+    m = [s[4] for s in old["left"]].index("clear the head's way") + 1
+    assert same(plan["left"][:m], old["left"][:m])
+    for arm in plan:
+        assert all(s[4] != "ready" and not isinstance(s[3], str) for s in plan[arm]), arm
+    assert plan["right"][-1][2] == "head" and plan["left"][-1][2] == "closed"
+    # the left takes the tail where it lies (a down grip, as rounds 23-25) and lifts it with strap to spare
+    ls = {s[4]: s for s in plan["left"]}
+    assert [s[4] for s in plan["left"]][-5:] == ["to the tail", "down to the tail", "take tail", "lift tail", "watch"]
+    assert np.allclose(ls["take tail"][3], L.thread_left_rot(90.0)) and ls["take tail"][2] == "closed"
+    held = np.asarray(ls["lift tail"][1], float) - L.B_TAIL_DEPTH * np.array([0.0, 0.0, 1.0])
+    assert L.strap_slack(tr, held) >= L.B_SLACK_MIN
+    assert np.allclose(plan["right"][-1][1], plan["right"][n - 1][1])  # still holding the head where it levelled it
+    assert L.plan_seconds(plan) < 50.0
+    try:
+        ws = M.demo()
+        assert isinstance(M.DEMO["steering"], M.ThreadSteering)
+        assert [w.label for w in ws["right"]][-1] == "watch"
+    finally:
+        M.stop_demo()
 
 
 def test_the_brake_engages_when_the_strap_backs_out_and_lets_go_when_pulled():
@@ -197,7 +340,16 @@ def test_finger_names_map_to_finger_joint_values():
 
 def test_the_default_build_is_the_tasks_start():
     if "TIE_BUILD" not in os.environ:
-        assert M.BUILD == "jig" and M.TIE.fixed and M.PHYS == "heavier"  # round 7: what scored 1.0
+        assert M.BUILD == "hang37" and not M.TIE.fixed  # round 38: nothing holds the head
+        if "TIE_PHYS" not in os.environ:
+            assert M.PHYS == L.HANG_PHYS == "nylonlead" and M.TIE.lead_in > 0 and M.TIE.head_friction == 0.25
+            assert any(type(o).__name__ == "Prop" and o.friction == 0.35 for o in M.OBJECTS)  # the cords, their own friction
+        assert M.CORDS_HARNESS is None and M.RATCHET["latch_at"] == L.LIFT_LATCH_AT
+        names = [o.name for o in M.OBJECTS]
+        assert not any("stand" in n or "clip" in n or "post" in n for n in names), names  # the review: no stand
+        tr = L.trial(M.TRIAL)
+        assert M.TRIAL == "h37-hold-l" and tr.build == "hang37" and tr.demo and tr.h_thread and tr.h_held
+        assert tr.phys == L.HANG_PHYS and not tr.h_pull_to  # the draw stops at the full mark
     importlib.reload  # noqa: B018 - keep the import used
 
 
@@ -210,12 +362,14 @@ def test_task_json_matches_the_code():
     assert card["instruction"] == M.INSTRUCTION
     assert card["category"] == "Societal relatability"
 
-    def tail_mm(slack):  # the submitted start: the head held in the clip, so snug is judged round the head there
-        return f"{1000 * (L.snug_through(L.BUILDS[M.BUILD]) - slack):.1f}"
-
-    assert f"at least {tail_mm(L.SNUG_SLACK)} mm" in card["scoring"]
-    assert f"at least {tail_mm(L.LOOSE_SLACK)} mm" in card["scoring"]
-    assert f"{round(1000 * L.CLEAR / 10)} cm" in card["scoring"] and "1 cm/s" in card["scoring"]
+    full, half = (f"{1000 * v:.1f}".removesuffix(".0") for v in L.lift_marks(L.BUILDS[M.BUILD].tie_l))
+    for text in (card["scoring"], card["setup"], card["reset_notes"]):
+        assert f"{full} mm" in text and f"{half} mm" in text
+    assert f"{round(1000 * L.CLEAR / 10)} cm" in card["scoring"] and "1 cm" in card["scoring"]
+    assert f"{round(1000 * L.BUILDS[M.BUILD].tie_l)} x 4.8" in card["setup"]
+    steps = int(card["run_limit"].split(" steps")[0].replace(",", ""))
+    assert L.plan_seconds(L.trial_plan(L.trial(M.TRIAL))) * L.CONTROL_HZ < steps - 400  # the demo fits, with room
+    assert len(card["fidelity"]) <= 500 and len(card["context"]) <= 500
     texts = [json.dumps(card)] + [(HERE / f).read_text(encoding="utf-8") for f in ("README.md", "SPEC.md")]
     for name in ("henry", "khoi", "lamp-tasks", "claudeimplementation", "lenovo", "/home/"):  # blind review
         for text in texts:
@@ -239,22 +393,25 @@ def test_no_arm_path_touches_the_tv_the_wall_or_the_cords():
 # -- round 6: the latch and the plastic strap -------------------------------------------------------------------------
 def test_the_latch_holds_the_pawl_clear_until_the_tail_is_out_then_brakes():
     """Round 5: 3 of 5 pushes blew up where the tip met the sprung pawl. The latch holds the pawl flat against the far
-    wall while the tail goes in, lets it onto the strap at LATCH_AT out, and brakes from then on."""
+    wall while the tail goes in, lets it onto the strap once the task's latch length is out (16 mm on the first start, 8 mm on the lying cords),
+    and brakes from then on."""
     import labkit
 
     labkit._SPECS["tie"] = M.TIE
     try:
         M._new_trial()
         M.set_ratchet("latch")
+        at = M.RATCHET["latch_at"]
+        assert at == (L.LIFT_LATCH_AT if M.BUILD in L.LIFT_BUILDS + L.HANG_BUILDS else L.LATCH_AT)
         s = labkit.start_state(M.TIE)
         M._ratchet(None, s, 0.0)
         assert labkit.held("tie", "pawl") == 0.0 and M.SEEN["opened"]
-        M._ratchet(None, s, L.LATCH_AT - 1 * L.MM)
-        M._ratchet(None, s, L.LATCH_AT - 3 * L.MM)  # backing out before the latch: no brake, the pawl stays clear
+        M._ratchet(None, s, at - 1 * L.MM)
+        M._ratchet(None, s, at - 3 * L.MM)  # backing out before the latch: no brake, the pawl stays clear
         assert labkit.held("tie", "pawl") == 0.0 and not M.SEEN["brake_on"]
-        M._ratchet(None, s, L.LATCH_AT + 1 * L.MM)
+        M._ratchet(None, s, at + 1 * L.MM)
         assert labkit.held("tie", "pawl") is None and M.SEEN["latched"] and not M.SEEN["opened"]
-        M._ratchet(None, s, L.LATCH_AT + 0.4 * L.MM)  # now it backs out: the brake
+        M._ratchet(None, s, at + 0.4 * L.MM)  # now it backs out: the brake
         assert M.SEEN["brake_on"] and labkit.held("tie", "pawl") is not None
     finally:
         labkit._HELD.clear()
@@ -419,8 +576,8 @@ def test_the_demo_steering_shifts_every_left_waypoint_like_the_probe_and_follows
 
 
 def test_the_demo_plays_the_candidate_and_the_probe_can_check_it_fresh():
-    cand = L.trial(M.TRIAL)
-    assert M.TRIAL == "m-demo" and cand is L.CANDIDATE and cand in L.KEPT
+    cand = L.trial("m-demo")  # the first submission's demo, on the pre-looped start (TIE_BUILD=jig plays it)
+    assert cand is L.CANDIDATE and cand in L.KEPT
     assert cand.handover and cand.build == "jig" and cand.demo and cand.ratchet == "latch" and cand.tighten > 0.0
     assert not cand.unstick  # as job 73 ran it
     demo, old = L.trial("c-demo"), L.trial("c-heavier")  # the earlier candidate and its demo-played twin
@@ -675,7 +832,9 @@ def test_the_stiff_presets_scale_the_straps_stiffness_and_nothing_else_of_the_ti
 
 
 # -- round 20: the lift start, stage B --------------------------------------------------------------------------------
-THREADS = [t.name for t in L.CHECKED if t.stage == "thread"]
+WEDGE = [t.name for t in L.CHECKED if t.b_wedge]  # round 29: the tail locked tip-down, then threaded
+THREADS = [t.name for t in L.CHECKED if t.stage == "thread" and not t.b_keys and not t.b_cinch and not t.b_wedge]  # rounds 20-25's
+CINCH = [t.name for t in L.CHECKED if t.b_cinch]  # round 26's scripted finish
 
 
 def _times(plan, arm):
@@ -938,7 +1097,8 @@ def test_the_longer_ties_are_the_lift_start_with_more_of_the_same_strap():
     assert L.BUILDS["jig"].tie_l == pytest.approx(L.TIE_L) and L.BUILDS["lift"].tie_l == pytest.approx(L.TIE_L)
 
 
-SLIDE_FIRST = [t.name for t in L.CHECKED if t.stage == "thread" and t.b_slide_first]
+SLIDE_FIRST = [t.name for t in L.CHECKED if t.stage == "thread" and t.b_slide_first and not t.b_keys and not t.b_wedge
+               and not t.b_cinch]
 
 
 @pytest.mark.parametrize("name", SLIDE_FIRST)
@@ -1057,3 +1217,847 @@ def test_the_strap_past_the_lefts_hold_clears_its_palm(name):
             pts = armcheck._meshes()[link] @ poses[link][:3, :3].T + poses[link][:3, 3] + np.asarray(BASES["left"])
             d = float(np.sqrt(((line[:, None] - pts[None]) ** 2).sum(-1)).min()) - L.W / 2
             assert d > 0.020, (slope, link, round(d * 1000, 1))
+
+
+# -- round 26: the scripted finish (the cinch) --------------------------------------------------------------------------
+class _Tie:
+    def __init__(self, pos, quat, polyline):
+        self.pos, self.quat_xyzw, self.polyline = np.asarray(pos, float), np.asarray(quat, float), np.asarray(polyline, float)
+
+
+def _play_cinch(name, aim0, err, head_off=(0.0, 0.0, 0.0)):
+    """Play a cinch trial's demo plan with CinchSteering fed a made-up tie: the head where the right holds it (off
+    by ``head_off``), the tail a straight stick from the left's fingers, aimed ``aim0`` below level when the pinch
+    closes and then turning with the wrist less ``err``. Returns (the steering, each arm's worst IK error in mm)."""
+    from yam_arena.demo import ArmPlan
+
+    tr = L.trial(name)
+    plan = M.demo_plan(tr)
+    try:
+        st = M.DEMO["steering"]
+        arms = {arm: ArmPlan(ws, BASES[arm]) for arm, ws in plan.items()}
+        hc = np.asarray(tr.b_head, float) + head_off
+        through = 0.0
+        for k in range(1, int(L.plan_seconds(L.trial_plan(tr)) * M.CONTROL_HZ) + 1):
+            t = k / M.CONTROL_HZ
+            lab = {arm: st.label(t, ws) for arm, ws in st.arms.items()}
+            ltcp, lrot, _, _ = arms["left"].target(t)
+            held = ltcp + L.B_TAIL_DEPTH * lrot[:, 2]
+            aim = aim0
+            if t >= st.when["left"]["turn tail"]:
+                aim = aim0 + (math.degrees(math.atan2(-lrot[:, 2][2], -lrot[:, 2][1])) - tr.b_feed_phi) - err
+            u = np.array([0.0, -math.cos(math.radians(aim)), -math.sin(math.radians(aim))])
+            tip = held + u * (tr.b_gft - 0.004)
+            poly = np.vstack([hc + [0.0, 0.3, -0.02], held - 0.05 * u, held, tip - 0.03 * u, tip - 0.02 * u, tip - 0.01 * u, tip])
+            if lab["right"] in ("pull", "pull hold"):
+                s = min(max((t - st.when["right"]["pull"]) / tr.b_pull_s, 0.0), 1.0)
+                through = min(0.034 + tr.b_pull * s * s * (3 - 2 * s) * 0.97, 0.1905)
+            elif t >= st.when["left"]["push hold"]:
+                through = 0.030
+            f = L.cinch_frame(hc, st.pitch)
+            off = tip - f["entry"]
+            tip_err = off - (off @ f["d"]) * f["d"] if lab["left"] == "align" else np.zeros(3)
+            st.update(k + 1, through, tip_err, state=_Tie(hc, L.matrix_to_quat_xyzw(L.head_rot_pitched(st.pitch)), poly))
+            for p in arms.values():
+                p.action7(t)
+        return st, {arm: p.worst_ik_mm for arm, p in arms.items()}
+    finally:
+        M.stop_demo()
+
+
+@pytest.mark.parametrize("name", CINCH[:1])
+@pytest.mark.parametrize("aim0, err, head_off", [(15.0, 0.0, (0.0, 0.0, 0.0)), (-15.0, 5.0, (0.0, 0.004, -0.003)),
+                                                 (-50.0, 0.0, (0.0, 0.0, 0.006)), (35.0, -5.0, (0.0, -0.004, 0.0))])
+def test_the_cinch_closed_loop_turns_wrist_and_head_onto_the_tail_and_stays_in_reach(name, aim0, err, head_off):
+    """CinchSteering: the wrist turns the tail on toward B_AIM (0 to 45 degrees, no further: its hand would stand
+    beside the right's), the head's pitch faces the tail as measured after the turn (30 to 75 degrees), the pull stops
+    with the full mark 4 mm out, and every target stays within the arms' reach."""
+    tr = L.trial(name)
+    st, ik_mm = _play_cinch(name, aim0, err, head_off)
+    assert max(ik_mm.values()) < 1.0, ik_mm
+    assert st.turn_deg == pytest.approx(float(np.clip(L.B_AIM - aim0, *L.CINCH_TURN)))
+    after = aim0 + st.turn_deg - err
+    assert st.aims == [round(aim0, 1), pytest.approx(after, abs=0.6)]
+    assert st.pitch == pytest.approx(float(np.clip(90.0 - after, L.CINCH_PITCH_MIN, L.CINCH_PITCH_MAX)), abs=0.7)
+    assert L.CINCH_PITCH_MAX + L.B_GRIP_TILT <= 90.0  # the right's hand never tips past straight down
+    assert tr.b_feed_phi + L.CINCH_TURN[1] <= 55.0 and tr.b_feed_phi + L.CINCH_TURN[0] >= 10.0
+    assert st.freeze is not None and st.back > 0.0  # the pull stopped short of its planned length
+    full = L.lift_marks(L.BUILDS[tr.build].tie_l)[0]
+    assert 0.1905 >= full + st.PAST and full + st.PAST > 0.1875 + 0.0005  # past the joint it rests at
+
+
+@pytest.mark.parametrize("name", CINCH)
+def test_the_cinch_hands_take_turns_so_the_tie_is_always_held(name):
+    tr = L.trial(name)
+    plan = L.trial_plan(tr)
+    lt, rt = _times(plan, "left"), _times(plan, "right")
+    ls, rs = {s[4]: s for s in plan["left"]}, {s[4]: s for s in plan["right"]}
+    assert rt["level head"][1] <= lt["to the tail"][0] + 1e-9  # the head in place before the tail is taken
+    assert ls["over"][2] == ls["top"][2] == ls["feed"][2] == tr.b_soft and ls["settle"][2] == "closed"  # eased only
+    #                                                                                          on the way over
+    # the tail goes up over the bundle before it comes down past its far side (taken straight there, the strap arches
+    # and the tail points away from the head); the head waits low and level under it, then turns to face it
+    held = {k: np.asarray(ls[k][1]) + L.B_TAIL_DEPTH * ls[k][3][:, 2] for k in ("lift tail", "over", "top", "feed")}
+    far = max(L.LIFT_HANG_Y - off + r for _, r, off, _, _ in L.LIFT_CORDS)
+    assert held["top"][2] - L.TOP >= 0.110 and abs(held["top"][1] - far) <= 0.010 and held["feed"][1] - far >= 0.025
+    assert held["top"][2] > held["over"][2] > held["lift tail"][2] and held["feed"][2] < held["over"][2]
+    assert rs["level head"][3][:, 2][2] > -0.2 and tr.b_wait_pitch == -10.0  # the right's hand near level, behind the head
+    assert np.allclose(rs["face tail"][3], L.back_rot(L.B_GRIP_TILT + tr.b_insert_pitch))
+    assert lt["settle 2"][1] <= rt["face tail"][0] + 1e-9 and rt["face tail"][1] <= lt["push"][0] + 1e-9
+    assert lt["push hold"][1] <= rt["release head"][0] + 1e-9  # the tail in and held before the right lets go
+    assert rt["take tail 2"][1] <= lt["let go strap 2"][0] + 1e-9  # the right has the tail before the left lets go
+    assert lt["grip head 2"][1] <= rt["raise tail"][0] + 1e-9  # the left has the head before the pull
+    assert rt["raise tail"] == pytest.approx(lt["raise head"])  # both raise the tie together
+    assert rt["let go tail 2"][1] <= lt["lower head"][0] + 1e-9
+    for arm, labels in (("left", ("take tail", "lift tail", "settle", "turn tail", "align", "push", "push hold",
+                                  "grip head 2", "raise head", "hold head", "lower head")),
+                        ("right", ("level head", "face tail", "take tail 2", "raise tail", "pull", "pull hold"))):
+        steps = {s[4]: s for s in plan[arm]}
+        for lab in labels:
+            assert steps[lab][2] in ("closed", "head"), (arm, lab)
+    # one push leaves the tail far enough out for the right's pads, past the latch
+    assert L.CINCH_OUT >= tr.b_tail_at + 1.8 * L.CINCH_PAD and L.CINCH_OUT > tr.latch_mm == L.LIFT_LATCH_AT
+    f = L.cinch_frame(tr.b_head, tr.b_insert_pitch)
+    assert tr.b_insert_pitch == pytest.approx(90.0 - L.B_AIM) and f["d"][1] < 0 and f["d"][2] < 0  # in toward -y, down
+    tip = np.asarray(ls["push"][1]) + L.B_TAIL_DEPTH * ls["push"][3][:, 2] + tr.b_gft * f["d"]
+    assert np.allclose(tip, f["exit"] + f["d"] * L.CINCH_OUT, atol=1e-9)
+    assert L.plan_seconds(plan) * L.CONTROL_HZ < 2400  # within the first submission's limit, well inside 3,600
+
+
+@pytest.mark.parametrize("name", CINCH[:1])
+def test_the_cinch_fingers_keep_clear_of_each_other_and_the_console(name):
+    """The fat finger envelopes: the left at the end of its push (the closed loop's extra depth included) against the
+    right holding the head; the right on the tail against the left on the head; nothing in the console."""
+    tr = L.trial(name)
+    plan = L.trial_plan(tr)
+    ls, rs = {s[4]: s for s in plan["left"]}, {s[4]: s for s in plan["right"]}
+    f = L.cinch_frame(tr.b_head, tr.b_insert_pitch)
+    right = L.finger_boxes(rs["face tail"][1], rs["face tail"][3], L.HEAD[1])
+    pushed = np.asarray(ls["push"][1]) + f["d"] * L.CINCH_DEPTH_CAP
+    assert _gap_between(L.finger_boxes(pushed, ls["push"][3], L.W), right) > 0.004
+    on_tail = L.finger_boxes(rs["take tail 2"][1], rs["take tail 2"][3], L.W)
+    on_head = L.finger_boxes(ls["grip head 2"][1], ls["grip head 2"][3], L.HEAD[1])
+    assert _gap_between(on_tail, on_head) > 0.003
+    for arm, steps in plan.items():
+        for s in steps:
+            if isinstance(s[3], str):
+                continue
+            gap = (L.HEAD[1] if s[2] == "head" else L.W if s[2] in ("closed", "soft", "soft3", "soft5")
+                   else L.FINGER_GAP[s[2]] * L.MM)
+            for c, r, h in L.finger_boxes(s[1], s[3], gap):
+                low = min((c + r @ (np.array(sg) * h))[2] for sg in itertools.product((-1, 1), repeat=3))
+                assert low >= L.TOP, (arm, s[4], round((low - L.TOP) * 1000, 1))
+
+
+@pytest.mark.parametrize("name", CINCH[:1])
+def test_the_cinch_arms_keep_clear_of_each_other(name):
+    import armcheck
+
+    d, t, ll, lr, la, lb = armcheck.arms_clearance(M, L.trial_plan(L.trial(name)))
+    assert d > 0.010, (name, round(d * 1000, 1), t, ll, lr, la, lb)
+
+
+def test_the_cinch_trials_differ_only_in_the_pinch_on_the_way_over():
+    base = L.trial(CINCH[0])
+    for name in CINCH[1:]:
+        tr = L.trial(name)
+        assert {k: v for k, v in vars(tr).items() if k not in ("name", "why", "b_soft")} == \
+            {k: v for k, v in vars(base).items() if k not in ("name", "why", "b_soft")}
+    assert [L.trial(n).b_soft for n in CINCH] == ["soft", "soft3", "soft5"]
+    assert [M.FINGERS[k] for k in ("soft", "soft3", "soft5")] == pytest.approx([-0.002, -0.0016, -0.0022])
+
+
+# -- round 29: the wedge (the tail locked tip-down in the pinch, then threaded) -------------------------------------------
+def _play_wedge(name, offsets, head_off=(0.0, 0.0, 0.0), pitch_off=0.0):
+    """Play a wedge trial's demo plan with WedgeSteering fed a made-up tie: the head where the right holds it (off by
+    ``head_off``, pitched ``pitch_off`` more), the tail a straight stick from the left's fingers that sits
+    ``offsets[0]`` degrees off the wrist's line until the left is over the bundle and ``offsets[1]`` from then on.
+    Returns (the steering, each arm's worst IK error in mm, the tip at the end of the line-up)."""
+    from yam_arena.demo import ArmPlan
+
+    tr = L.trial(name)
+    plan = M.demo_plan(tr)
+    try:
+        st = M.DEMO["steering"]
+        arms = {arm: ArmPlan(ws, BASES[arm]) for arm, ws in plan.items()}
+        hc = np.asarray(tr.b_head, float) + head_off
+        hr = L.head_rot_pitched(tr.b_insert_pitch + pitch_off)
+        tip_at_align = None
+        for k in range(1, int(L.plan_seconds(L.trial_plan(tr)) * M.CONTROL_HZ) + 1):
+            t = k / M.CONTROL_HZ
+            lab = st.label(t, st.arms["left"])
+            ltcp, lrot, _, _ = arms["left"].target(t)
+            held = ltcp + L.B_TAIL_DEPTH * lrot[:, 2]
+            phi = math.degrees(math.atan2(-lrot[:, 2][2], -lrot[:, 2][1]))
+            a = math.radians(phi - 90.0 + offsets[0 if t < st.when["left"]["settle 2"] else 1])
+            u = np.array([0.0, math.cos(a), math.sin(a)])
+            tip = held + u * tr.b_gft
+            poly = np.vstack([hc + [0.0, 0.3, -0.02], held - 0.05 * u, held, tip - 0.02 * u, tip - 0.01 * u, tip])
+            if lab == "align":
+                tip_at_align = tip
+            st.update(k + 1, 0.0, np.zeros(3), state=_Tie(hc, L.matrix_to_quat_xyzw(hr), poly))
+            for p in arms.values():
+                p.action7(t)
+        return st, {arm: p.worst_ik_mm for arm, p in arms.items()}, tip_at_align, (hc, hr)
+    finally:
+        M.stop_demo()
+
+
+@pytest.mark.parametrize("name", WEDGE[:2])
+@pytest.mark.parametrize("offsets, head_off, pitch_off", [
+    ((-48.0, -48.0), (0.0, 0.0, 0.0), 0.0), ((-30.0, -42.0), (0.002, 0.004, -0.003), 6.0),
+    ((-55.0, -50.0), (0.0, -0.004, 0.004), -5.0), ((10.0, 48.0), (0.0, 0.0, 0.0), 0.0)])
+def test_the_wedge_closed_loop_points_the_tail_down_the_slot_and_stays_in_reach(name, offsets, head_off, pitch_off):
+    """WedgeSteering: whatever angle the strap locks at in the pinch, the wrist's tilt is set so the tail points down
+    the slot of the head as it is really held (within WEDGE_PHI), the tip lines up B_TIP_GAP before the entry, and
+    every target stays within the arms' reach."""
+    tr = L.trial(name)
+    st, ik_mm, tip, (hc, hr) = _play_wedge(name, offsets, head_off, pitch_off)
+    assert max(ik_mm.values()) < 1.0, ik_mm
+    d = hr @ np.array([0.0, 0.0, -1.0])
+    entry = hc + hr @ np.array([L.SLOT_C, 0.0, L.ENTRY_Z])
+    assert [r["offset_deg"] for r in st.reads] == pytest.approx(list(offsets), abs=0.3)
+    want = 90.0 + L.heading_deg(d) - offsets[1]
+    assert st.reads[1]["phi_deg"] == pytest.approx(float(np.clip(want, *L.WEDGE_PHI)), abs=0.3)
+    assert np.allclose(tip, entry - d * L.B_TIP_GAP, atol=3e-4)  # the tip where the line-up wants it
+    if L.WEDGE_PHI[0] < want < L.WEDGE_PHI[1]:  # ... and the tail along the slot
+        lrot = next(w for w in st.arms["left"] if w.label == "align").rot
+        phi = math.degrees(math.atan2(-lrot[:, 2][2], -lrot[:, 2][1]))
+        assert phi - 90.0 + offsets[1] == pytest.approx(L.heading_deg(d), abs=0.5)
+
+
+@pytest.mark.parametrize("name", WEDGE)
+def test_the_wedge_plan_arches_the_tail_before_it_lifts_and_threads_from_over_the_bundle(name):
+    tr = L.trial(name)
+    plan = L.trial_plan(tr)
+    lt, rt = _times(plan, "left"), _times(plan, "right")
+    ls, rs = {s[4]: s for s in plan["left"]}, {s[4]: s for s in plan["right"]}
+    tg = L.thread_targets(tr)
+    held = {k: np.asarray(ls[k][1]) + L.B_TAIL_DEPTH * ls[k][3][:, 2] for k in
+            ("take tail", "arch", "lift tail", "settle", "over", "settle 2", "above head", "align", "push")}
+    assert rt["level head"][1] <= lt["to the tail"][0] + 1e-9  # the head in place before the tail is taken
+    assert np.allclose(held["take tail"], tg["tail"]) and ls["take tail"][2] == "closed"
+    # pushed toward the bundle along the console (the strap behind arches up), then lifted
+    assert held["arch"][1] == pytest.approx(held["take tail"][1] - tr.b_arch) and tr.b_arch >= 0.030
+    assert 0.001 <= held["arch"][2] - held["take tail"][2] <= 0.003
+    assert held["lift tail"][2] - held["arch"][2] >= 0.045 and np.allclose(held["settle"], held["lift tail"])
+    # the strap behind stays an arch while the tail is lifted (pulled straight, it locks tip-up again) ...
+    assert min(L.strap_slack(tr, held[k]) for k in ("arch", "lift tail", "over", "above head", "align", "push")) >= 0.040
+    # ... and the lifted tail, turned WEDGE_DEG down in the pinch, keeps its tip off the console
+    assert held["lift tail"][2] - L.TOP - tr.b_gft * math.sin(math.radians(L.WEDGE_DEG)) >= 0.010
+    far = max(L.LIFT_HANG_Y - off + r for _, r, off, _, _ in L.LIFT_CORDS)
+    assert held["lift tail"][1] - far >= 0.060  # the arch has room between the fingers and the bundle
+    # the tail of the plan: locked WEDGE_DEG below the wrist's line, pointing down the slot from "over" on
+    d, e = tg["through"], tg["entry"]
+    phi = L.wedge_phi(d, -L.WEDGE_DEG)
+    assert L.WEDGE_PHI[0] < phi < L.WEDGE_PHI[1]
+    for k in ("over", "settle 2", "above head", "align", "push", "push hold", "let go tail"):
+        assert np.allclose(ls[k][3], L.thread_left_rot(phi))
+    assert np.allclose(held["over"], tr.b_over) and np.allclose(held["settle 2"], tr.b_over)
+    assert np.allclose(held["align"] + tr.b_gft * d, e - d * L.B_TIP_GAP, atol=1e-9)
+    assert np.allclose(held["push"] + tr.b_gft * d, e + d * (L.HEAD[2] + tr.b_out), atol=1e-9)
+    assert tr.b_out + L.B_DEPTH_CAP <= tr.b_gft - 0.0262 - 0.002  # the left's pads stay over the right's plates
+    assert tr.b_out >= tr.latch_mm + 0.004 and tr.latch_mm == L.LIFT_LATCH_AT  # one push passes the latch
+    for lab in ("take tail", "arch", "lift tail", "settle", "over", "settle 2", "above head", "align", "push", "push hold"):
+        assert ls[lab][2] == "closed", lab
+    if tr.b_draw:  # round 30: the right has the tail below the head before the left lets go, and draws after
+        assert lt["push hold"][1] <= rt["release head"][0] + 1e-9
+        assert rt["take tail 2"][1] <= lt["let go tail"][0] + 1e-9 and lt["back off tail"][1] <= rt["pull"][0] + 1e-9
+        gp = np.asarray(rs["take tail 2"][1]) + L.GRIP_DEPTH * rs["take tail 2"][3][:, 2]
+        below = float((gp - (e + d * L.HEAD[2])) @ d)  # the strap's point in the right's pads, below the exit
+        assert below == pytest.approx(tr.b_tail_at + L.CINCH_PAD) and below <= tr.b_out - 0.010  # pads 8 mm below
+        #                                                    the exit, the strap's last 12 mm and more in them
+        assert rs["take tail 2"][2] == rs["pull"][2] == rs["pull hold"][2] == "closed"
+        drawn = np.asarray(rs["pull"][1]) - np.asarray(rs["take tail 2"][1])
+        assert np.linalg.norm(drawn) == pytest.approx(tr.b_pull) and drawn[1] < 0 < drawn[2]
+        full = L.lift_marks(L.BUILDS[tr.build].tie_l)[0]
+        assert tr.b_pull >= full + 0.004 - tr.b_out  # far enough to bring the full mark out
+        if tr.b_hold_cords:
+            assert lt["pin cords"][1] <= rt["pull"][0] + 1e-9 and rt["let go tail 2"][1] <= lt["let go cords 2"][0] + 1e-9
+    else:
+        assert lt["push hold"][1] <= rt["let go head"][0] + 1e-9 and lt["let go tail"][1] <= rt["let go head"][0] + 1e-9
+    assert L.plan_seconds(plan) * L.CONTROL_HZ < 2400
+
+
+@pytest.mark.parametrize("name", WEDGE)
+def test_the_wedge_fingers_and_arms_keep_clear(name):
+    import armcheck
+
+    tr = L.trial(name)
+    plan = L.trial_plan(tr)
+    ls, rs = {s[4]: s for s in plan["left"]}, {s[4]: s for s in plan["right"]}
+    d = L.thread_targets(tr)["through"]
+    right = L.finger_boxes(rs["level head"][1], rs["level head"][3], L.HEAD[1])
+    pushed = np.asarray(ls["push"][1]) + d * L.B_DEPTH_CAP
+    assert _gap_between(L.finger_boxes(pushed, ls["push"][3], L.W), right) > 0.001
+    if tr.b_draw:  # the right on the tail below the head against the left still holding the strap above it
+        on_tail = L.finger_boxes(rs["take tail 2"][1], rs["take tail 2"][3], L.W)
+        assert _gap_between(on_tail, L.finger_boxes(ls["push"][1], ls["push"][3], L.W)) > 0.010
+    for arm, steps in plan.items():
+        for s in steps:
+            if isinstance(s[3], str):
+                continue
+            gap = L.HEAD[1] if s[2] == "head" else L.W if s[2] == "closed" else L.FINGER_GAP[s[2]] * L.MM
+            for c, r, h in L.finger_boxes(s[1], s[3], gap):
+                low = min((c + r @ (np.array(sg) * h))[2] for sg in itertools.product((-1, 1), repeat=3))
+                assert low >= L.TOP, (arm, s[4], round((low - L.TOP) * 1000, 1))
+    gap, t, ll, lr, la, lb = armcheck.arms_clearance(M, plan)
+    assert gap > 0.010, (name, round(gap * 1000, 1), t, ll, lr, la, lb)
+
+
+@pytest.mark.parametrize("name, tight_at", [("w30-draw", None), ("w30-draw-pin", 0.150)])
+def test_the_draw_stops_at_the_full_mark_or_when_the_tie_is_tight(name, tight_at):
+    """Round 30's closed loop: the right's grip goes onto the strap's real point below the real exit; the draw stops
+    with the full mark 4 mm out, or (a tie that tightens sooner) once the hand is 12 mm on with no more tail coming."""
+    from yam_arena.demo import ArmPlan
+
+    tr = L.trial(name)
+    plan = M.demo_plan(tr)
+    try:
+        st = M.DEMO["steering"]
+        arms = {arm: ArmPlan(ws, BASES[arm]) for arm, ws in plan.items()}
+        hc = np.asarray(tr.b_head, float) + [0.002, -0.003, 0.004]
+        hr = L.head_rot_pitched(tr.b_insert_pitch + 4.0)
+        d = hr @ np.array([0.0, 0.0, -1.0])
+        ex = hc + hr @ np.array([L.SLOT_C, 0.0, L.EXIT_Z])
+        full = L.lift_marks(L.BUILDS[tr.build].tie_l)[0]
+        t_pull, at_freeze, through = st.when["right"]["pull"], None, 0.0
+        for k in range(1, int(L.plan_seconds(L.trial_plan(tr)) * M.CONTROL_HZ) + 1):
+            t = k / M.CONTROL_HZ
+            rtcp = arms["right"].target(t)[0]
+            if t >= st.when["left"]["push hold"]:
+                through = tr.b_out
+            if t >= t_pull:  # the first 60 mm of the draw take up the loop, then the tail follows the hand
+                hand = float(np.linalg.norm(rtcp - start))
+                through = min(tr.b_out + max(hand - 0.060, 0.0), tight_at or 1.0)
+            else:
+                start = rtcp
+            tip = ex + d * through
+            poly = np.vstack([hc + [0.0, 0.3, -0.02], hc + [0.0, 0.2, 0.05], ex - d * 0.01, ex, tip])
+            st.update(k + 1, through, np.zeros(3), state=_Tie(hc, L.matrix_to_quat_xyzw(hr), poly))
+            if st.freeze is not None and at_freeze is None:
+                at_freeze = (t, rtcp.copy(), through)
+            for p in arms.values():
+                p.action7(t)
+        assert max(p.worst_ik_mm for p in arms.values()) < 1.0
+        grip = next(w for w in st.arms["right"] if w.label == "take tail 2")
+        want = ex + d * (tr.b_tail_at + L.CINCH_PAD)
+        assert np.allclose(np.asarray(grip.pos) + L.GRIP_DEPTH * np.asarray(grip.rot)[:, 2], want, atol=1e-6)
+        assert at_freeze is not None and st.why == ("tight" if tight_at else "mark")
+        end = arms["right"].target(st.when["right"]["pull hold"] + 0.5)[0]
+        assert np.linalg.norm(end - at_freeze[1]) < 0.004  # the hand stays where it stopped
+        if tight_at:
+            assert at_freeze[2] == pytest.approx(tight_at) and np.linalg.norm(at_freeze[1] - start) < 0.060 + tight_at
+        else:
+            assert full + st.PAST <= at_freeze[2] < full + st.PAST + 0.006
+    finally:
+        M.stop_demo()
+
+
+# -- round 31: the hanging cords without the stand, the strap held by its faces -----------------------------------------
+HANG = [t.name for t in L.CHECKED if t.stage == "hang"]
+
+
+@pytest.mark.parametrize("name", HANG[:1])
+def test_the_hang_start_lifts_the_tie_straight_turns_it_on_edge_and_brings_its_tail_to_the_front(name):
+    from yam_arena.demo import ArmPlan
+
+    tr = L.trial(name)
+    b = L.BUILDS[tr.build]
+    plan = L.trial_plan(tr)
+    rs, ls = {s[4]: s for s in plan["right"]}, {s[4]: s for s in plan["left"]}
+    rt, lt = _times(plan, "right"), _times(plan, "left")
+    assert not b.fixed and tr.build in L.HANG_BUILDS and b.tie_l == pytest.approx(0.300)
+    start = L.start_polyline(b)
+    assert start[:, 0].max() < L.STRIP["x"][0] - 0.05 and np.allclose(start[:, 2], start[0, 2])  # flat, clear of the strip
+    # both hands take the tie where it lies, lift it and turn it together: the strap between them keeps its length
+    at, r0, o = L.hang_pick(b)
+    for a, c in (("grip", "take tail"), ("lift", "lift tail"), ("turn on edge", "turn tail")):
+        assert rt[a] == pytest.approx(lt[c])
+        head = np.asarray(rs[a][1]) + rs[a][3] @ o
+        pinch = np.asarray(ls[c][1]) + L.B_TAIL_DEPTH * ls[c][3][:, 2]
+        assert np.linalg.norm(pinch - head) == pytest.approx(np.linalg.norm(
+            L.ROOT + np.array([b.tie_l - tr.h_first, 0.0, 0.0])), abs=1e-6), a
+    assert np.allclose(rs["turn on edge"][3][:, 2], (1.0, 0.0, 0.0)) and abs(rs["turn on edge"][3][:, 0][2]) == pytest.approx(1.0)
+    assert np.allclose(ls["turn tail"][3], L.RY_ROLL @ ls["take tail"][3])
+    assert lt["let go tail"][1] <= rt["out"][0] + 1e-9  # the left has let go before the right carries the ruler off
+    # behind the cords: the ruler's tip starts short of them, its line passes 10 mm and more behind their backs
+    back = max(c.xy[0] + c.diameter / 2 for c in L.CORDS)
+    head = np.asarray(rs["behind"][1]) + rs["behind"][3] @ o
+    root, u = head + (L.RY_ROLL @ b.head_rot) @ L.ROOT, (L.RY_ROLL @ b.head_rot)[:, 0]
+    assert np.allclose(u, (0.0, 1.0, 0.0)) and (root + u * b.tie_l)[1] < min(c.xy[1] - c.diameter / 2 for c in L.CORDS) - 0.015
+    assert root[0] - L.T / 2 - back >= 0.010 and L.WALL["x"][0] - root[0] >= 0.050
+    # swung, the tail is in front of the cords' plane where the left reaches down to it, by its faces
+    f = L.hang_ruler(b, tr.h_swing, L.TOP + tr.h_low, tr.h_root_back)
+    tail = f["root"] + f["u"] * (b.tie_l - tr.h_gft)
+    grip = np.asarray(ls["take tail 2"][1]) - np.array([0.0, 0.0, L.GRIP_DEPTH])
+    assert np.allclose(grip, tail) and tail[0] < min(c.xy[0] for c in L.CORDS) - 0.10
+    lr = ls["take tail 2"][3]
+    assert np.allclose(lr[:, 2], (0.0, 0.0, -1.0)) and abs(float(lr[:, 0] @ f["u"])) < 1e-9  # closing across the strap
+    assert ls["take tail 2"][2] == "closed" and rt["hold tie"][1] <= lt["take tail 2"][0] + 1e-9
+    assert lt["take tail 2"][1] <= rt["release head"][0] + 1e-9  # the left has it before the right lets go
+    # within reach all the way, and off the TV, the wall and the cords
+    arms = {arm: ArmPlan(ws, BASES[arm]) for arm, ws in M.plan_waypoints(plan).items()}
+    for k in range(1, int(L.plan_seconds(plan) * M.CONTROL_HZ) + 1):
+        for p in arms.values():
+            p.action7(k / M.CONTROL_HZ)
+    assert max(p.worst_ik_mm for p in arms.values()) < 1.0 and max(p.worst_ik_deg for p in arms.values()) < 1.0
+
+
+def test_the_hang_closed_loop_takes_the_tail_where_it_really_is():
+    tr = L.trial(HANG[0])
+    b = L.BUILDS[tr.build]
+    plan = M.demo_plan(tr)
+    try:
+        st = M.DEMO["steering"]
+        f = L.hang_ruler(b, tr.h_swing + 6.0, L.TOP + tr.h_low - 0.004, tr.h_root_back)  # swung 6 degrees more, 4 mm low
+        poly = np.array([f["root"] + f["u"] * k * L.LINK for k in range(b.n_links + 1)])
+        t = next(t0 for t0, w in zip(np.cumsum([0.0] + [w.duration for w in plan["left"]]), plan["left"])
+                 if w.label == "to the tail 2") + 0.5
+        st.update(int(t * M.CONTROL_HZ) // L.STEER_EVERY * L.STEER_EVERY, 0.0, np.zeros(3), state=_Tie(f["head"], (0, 0, 0, 1), poly))
+        w = next(w for w in plan["left"] if w.label == "take tail 2")
+        want = L.face_tcp(poly[0] + f["u"] * (b.tie_l - tr.h_gft))
+        assert np.allclose(w.pos, want, atol=1e-6) and abs(float(np.asarray(w.rot)[:, 0] @ f["u"])) < 1e-6
+    finally:
+        M.stop_demo()
+
+
+def test_the_hanging_cords_are_scored_by_the_marks_too():
+    b = L.BUILDS["hang30"]
+    full, half = L.lift_marks(b.tie_l)
+    assert (full, half) == pytest.approx((0.300 - 10.5 * L.LINK, 0.300 - 13.5 * L.LINK))
+    start = L.start_polyline(b)
+    q = L.matrix_to_quat_xyzw(b.head_rot)
+    assert L.hang_score(start, b.head_pos, q, 1.0, 0.0) == 0.0  # lying open on the console
+
+
+# -- rounds 32-33: the hanging cords, the whole tie -----------------------------------------------------------------------
+def _play_hang(name="h37-tie", tail_off=-3.0, pivot_to=8.0, taut_at=0.034, slot_off=0.0, tight_at=None):
+    """Play a whole-tie trial's demo plan with HangSteering fed a made-up tie. Until the left has brought the tail
+    in: a straight ruler from the head the right holds. Then: the head's centre where the right's fingers hold it; its
+    strap leaving it 70 degrees left of the hand's approach (job 118, after the hand squared up) until the draw at
+    the front has gone ``taut_at``, where it turns to ``pivot_to`` degrees off the strap's line from the cords and
+    from then on turns with the hand, ``slot_off`` degrees out; the tail a straight stick from the left's fingers,
+    ``tail_off`` degrees off the hand's strap axis; after the push, through the slot, following the right's draw
+    less 50 mm (to ``tight_at`` at most). Returns (the steering, {(arm, label): worst IK mm, deg} over 1, the tip's
+    offset from the slot's line at the line-up, the full mark)."""
+    from yam_arena.demo import ArmPlan
+
+    tr = L.trial(name)
+    b = L.BUILDS[tr.build]
+    plan = M.demo_plan(tr)
+    try:
+        st = M.DEMO["steering"]
+        arms = {arm: ArmPlan(ws, BASES[arm]) for arm, ws in plan.items()}
+        o = L.hang_pick(b)[2]
+        full = L.lift_marks(b.tie_l)[0]
+        f = L.hang_ruler(b, tr.h_swing + 4.0, L.TOP + tr.h_low - 0.003, tr.h_root_back)
+        ruler = np.array([f["root"] + f["u"] * k * L.LINK for k in range(b.n_links + 1)])
+        through, start, tip_off, per, rel, held = 0.0, None, None, {}, None, None
+        regrip_at, let_go, shift, root_now = None, False, np.zeros(3), 0.0
+        when = st.when
+        t_front = when["right"]["hold head"]
+        T = L.plan_seconds(L.trial_plan(tr))
+        for k in range(1, int(T * M.CONTROL_HZ) + 1):
+            t = k / M.CONTROL_HZ
+            lab = {arm: st.label(t, ws) for arm, ws in st.arms.items()}
+            ltcp, lrot, _, _ = arms["left"].target(t)
+            rtcp, rrot, _, _ = arms["right"].target(t)
+            if t < when["left"]["feed"]:
+                state = _Tie(f["head"], L.matrix_to_quat_xyzw(f["rot"]), ruler)
+            else:
+                opened = "open head" in when["right"] and when["right"]["open head"] <= t < when["right"]["close head"] + 0.8
+                if t < when["right"]["release head"] and not opened:
+                    hc = rtcp + rrot @ o
+                    hand = L.heading_xy(rrot[:, 2])
+                    root = hand + 70.0
+                    if "tauten" in when["right"] and t >= when["right"]["tauten"]:
+                        drawn = float(np.linalg.norm(hc - (np.asarray(st.base["right"]["hold head"][0]) + st.base["right"]["hold head"][1] @ o)))
+                        if rel is None and drawn >= taut_at:
+                            rel = L.hang_leg(hc)[0] + pivot_to - hand  # from here the head turns with the hand
+                        if rel is not None:
+                            if regrip_at is not None:  # taken again: it turns with the hand from where it was let go
+                                rel = regrip_at - hand
+                                regrip_at = None
+                            root = hand + rel
+                    if held is not None and "close head" in when["right"] and t >= when["right"]["close head"] + 0.8:
+                        hc = hc + shift  # the head stayed where it was let go; the hand came onto it there
+                    hr = L.rot_z(root - 90.0 + slot_off) @ L.RY_ROLL @ np.asarray(b.head_rot, float)
+                    held = (hc, hr)
+                    root_now = root
+                elif opened and not let_go:
+                    let_go = True
+                    held = (held[0] + np.array([0.003, -0.002, 0.0]), held[1])  # let go, the head shifts a little
+                    regrip_at = root_now
+                    shift = np.array([0.003, -0.002, 0.0])
+                hc, hr = held
+                d = hr @ np.array([0.0, 0.0, -1.0])
+                ex = hc + hr @ np.array([L.SLOT_C, 0.0, L.EXIT_Z])
+                en = hc + hr @ np.array([L.SLOT_C, 0.0, L.ENTRY_Z])
+                grip = ltcp + L.GRIP_DEPTH * lrot[:, 2]
+                y = lrot[:, 1]
+                a = math.atan2(y[1], y[0]) + math.radians(tail_off)
+                u = np.array([math.cos(a), math.sin(a), 0.0])
+                tip = grip + u * tr.h_gft
+                if t >= when["left"]["push hold"]:
+                    through = max(through, tr.h_out)
+                if lab["right"] in ("pull out", "pull", "pull hold"):
+                    if start is None:
+                        start = rtcp.copy()
+                    through = min(tr.h_out + max(float(np.linalg.norm(rtcp - start)) - 0.05, 0.0), tight_at or 1.0)
+                if through > 0:
+                    poly = np.vstack([hc + [0.1, 0.0, 0.0], en - d * 0.05, en, ex, ex + d * through])
+                else:
+                    poly = np.vstack([hc + [0.1, 0.0, 0.0], grip - u * 0.05, grip, tip - u * 0.02, tip])
+                if lab["left"] == "align":
+                    off = tip - en
+                    tip_off = off - (off @ u) * u  # off the tail's own line through the entry
+                state = _Tie(hc, L.matrix_to_quat_xyzw(hr), poly)
+            st.update(k + 1, through, np.zeros(3), state=state)
+            for arm, pl in arms.items():
+                before = (pl.worst_ik_mm, pl.worst_ik_deg)
+                pl.worst_ik_mm = pl.worst_ik_deg = 0.0
+                pl.action7(t)
+                w = per.setdefault((arm, lab[arm]), [0.0, 0.0])
+                w[0], w[1] = max(w[0], pl.worst_ik_mm), max(w[1], pl.worst_ik_deg)
+                pl.worst_ik_mm, pl.worst_ik_deg = max(before[0], pl.worst_ik_mm), max(before[1], pl.worst_ik_deg)
+        bad = {k: (round(v[0], 1), round(v[1], 1)) for k, v in per.items() if v[0] > 1.0 or v[1] > 1.0}
+        return st, bad, tip_off, full
+    finally:
+        M.stop_demo()
+
+
+@pytest.mark.parametrize("kw, why", [
+    (dict(), "mark"), (dict(tail_off=3.0, pivot_to=18.0, taut_at=0.020, slot_off=-6.0), "mark"),
+    (dict(pivot_to=30.0, taut_at=0.050, tight_at=0.26), "tight")])
+@pytest.mark.parametrize("name", ["h37-tie", "h37-regrip", "h37-firm"])
+def test_the_hang_closed_loop_draws_taut_turns_the_head_aims_the_tail_and_stops_the_draw(name, kw, why):
+    """HangSteering on the 370 mm tie, fed a made-up tie: the draw at the front stops where the head has turned to
+    within PIVOT_OK of the strap's line (or at its end), the right's hand turns back by what the slot is round of the
+    tail's line (at most what it kept), the left's wrist goes no further round than tr.h_tail_max, the tip lines up on
+    the entry, the right's grip goes onto the real tail below the real exit, the draw stops at the full mark or when
+    the tie is tight, and every target is within reach."""
+    tr = L.trial(name)
+    st, bad, tip, full = _play_hang(name, **kw)
+    assert not bad, bad
+    taut, turn, aim = st.reads["taut"], st.reads["turn"], st.reads["aim"]
+    if tr.h_regrip_yaw:
+        assert np.linalg.norm(st.moved["head 2"]) <= 1000 * st.SNAP2 and "regrip" in st.reads
+    assert taut["why"] in ("turned", "end") and 0.0 < taut["drawn_mm"] <= 1000 * tr.h_tauten + 0.1
+    if taut["why"] == "turned":
+        assert abs(taut["gap_deg"]) <= st.PIVOT_OK
+    most = tr.h_carry_yaw + tr.h_regrip_yaw
+    assert 0.0 <= turn["turn_deg"] <= most and turn["turn_deg"] == pytest.approx(
+        float(np.clip(turn["wanted_deg"], 0.0, most)))
+    assert aim["hand_deg"] <= tr.h_tail_max + 0.2 and abs(aim["turn_deg"]) <= st.TURN
+    assert abs((aim["slot_deg"] - aim["tail_deg"] + 180.0) % 360.0 - 180.0) <= 26.0  # within the slot's play
+    assert np.linalg.norm(tip) < 0.002  # the tip on the entry at the line-up
+    assert st.why == why and st.freeze is not None
+    assert np.linalg.norm(st.moved["stub"]) <= 1000 * st.SNAP2
+
+
+def test_the_hang_tie_plan_wraps_the_head_round_threads_and_draws():
+    tr = L.trial("h37-tie")
+    b = L.BUILDS[tr.build]
+    plan = L.trial_plan(tr)
+    rs, ls = {s[4]: s for s in plan["right"]}, {s[4]: s for s in plan["left"]}
+    rt, lt = _times(plan, "right"), _times(plan, "left")
+    o = L.hang_pick(b)[2]
+    assert b.tie_l == pytest.approx(59 * L.LINK) and len(M.build_tie(tr.build).points) == 60
+    # the left has the tail, by its faces, before the right eases its squeeze and carries the head round the cords,
+    # its hand still turned as it swung the ruler
+    assert lt["feed"][1] <= rt["ease"][0] + 1e-9 and rs["ease"][2] == rs["to front"][2] == "head_light"
+    assert np.allclose(rs["round 2"][3], L.rot_z(tr.h_carry_yaw) @ rs["pull"][3]) and tr.h_carry_yaw == tr.h_swing
+    heads = [np.asarray(rs[k][1]) + rs[k][3] @ o for k in ("round 1", "round 2", "round 3", "to front")]
+    cords = np.mean([c.xy for c in L.CORDS], axis=0)
+    assert all(p[1] < cords[1] for p in heads[:3]) and [p[0] for p in heads] == sorted((p[0] for p in heads), reverse=True)
+    assert heads[0][0] > cords[0] > heads[2][0] and min(np.linalg.norm(p[:2] - cords) for p in heads) >= 0.045
+    # at the front: slack first (the strap's budget, with job 118's 45 mm for the loop's bends), then out along the
+    # strap's line from the cords, then the hand turned back
+    leg_deg, leg = L.hang_leg(heads[-1])
+    feed = np.asarray(ls["feed"][1]) + L.GRIP_DEPTH * ls["feed"][3][:, 2]
+    spare = b.tie_l - tr.h_gft - 0.045 - leg - np.linalg.norm(feed[:2] - (cords + [0.0, 0.008]))
+    assert 0.015 <= spare <= tr.h_tauten - 0.010  # slack at the front, taut before the draw's end
+    far = np.asarray(rs["tauten"][1]) + rs["tauten"][3] @ o
+    away = (far - heads[-1])[:2] / np.linalg.norm((far - heads[-1])[:2])
+    assert np.allclose(away, -np.array([math.cos(math.radians(leg_deg)), math.sin(math.radians(leg_deg))]), atol=1e-9)
+    assert np.linalg.norm(far - heads[-1]) == pytest.approx(tr.h_tauten)
+    assert np.allclose(rs["turn head"][3], L.rot_z(tr.h_carry_yaw - tr.h_turn_head) @ rs["pull"][3])
+    assert rt["hold head 2"][1] <= lt["settle 3"][0] + 1e-9  # the head is where it will be before the left reads it
+    # the tail's line as the left threads it: tr.h_tail_deg, the tip on the entry, pushed along that line
+    lr = ls["push"][3]
+    a = math.radians(tr.h_tail_deg)
+    t_hat = np.array([math.cos(a), math.sin(a), 0.0])
+    head = np.asarray(rs["hold head 2"][1]) + rs["hold head 2"][3] @ o
+    hr = L.rot_z(tr.h_tail_deg) @ L.RY_ROLL @ np.asarray(b.head_rot, float)
+    entry = head + hr @ np.array([L.SLOT_C, 0.0, L.ENTRY_Z])
+    grip = np.asarray(ls["align"][1]) + L.GRIP_DEPTH * lr[:, 2]
+    assert np.allclose(grip + t_hat * tr.h_gft, entry - t_hat * L.B_TIP_GAP, atol=1e-9)
+    assert tr.h_tail_max - tr.h_tail_deg >= 2.0
+    assert math.degrees(math.atan((L.PASSAGE_X[1] - L.PASSAGE_X[0] - L.T) / L.HEAD[2])) >= 25.0  # the slot's play
+    pushed = np.asarray(ls["push"][1]) + L.GRIP_DEPTH * lr[:, 2] + t_hat * tr.h_gft
+    assert np.allclose(pushed, entry + t_hat * (L.HEAD[2] + tr.h_out), atol=1e-9) and tr.h_out > tr.latch_mm + 0.01
+    # the right takes the tail below the exit before the left lets go, then draws it far enough for the full mark
+    assert lt["push hold"][1] <= rt["release head"][0] + 1e-9 and rt["take stub"][1] <= lt["let go tail 3"][0] + 1e-9
+    assert rs["take stub"][2] == rs["pull"][2] == "closed" and lt["clear 2"][0] <= rt["pull out"][0] + 2.0
+    drawn = np.asarray(rs["pull"][1]) - np.asarray(rs["take stub"][1])
+    assert np.linalg.norm(drawn) >= L.lift_marks(b.tie_l)[0] + 0.004 - tr.h_out + 0.03 and drawn[1] < -0.2
+    assert L.plan_seconds(plan) * L.CONTROL_HZ < 2400
+
+
+def test_the_300_mm_whole_tie_trials_differ_only_in_the_squeeze():
+    a, b = L.trial_plan(L.trial("h30-tie"))["right"], L.trial_plan(L.trial("h30-tie-firm"))["right"]
+    assert [s[4] for s in a] == [s[4] for s in b]
+    ra, rb = {s[4]: s for s in a}, {s[4]: s for s in b}
+    assert ra["to front"][2] == "head_light" and rb["to front"][2] == "head"
+    assert all(np.allclose(ra[k][1], rb[k][1]) for k in ra if ra[k][1] is not None)
+
+
+def test_the_firm_trial_differs_only_in_the_squeeze_from_the_turn_back_on():
+    a, b = L.trial_plan(L.trial("h37-tie"))["right"], L.trial_plan(L.trial("h37-firm"))["right"]
+    assert [s[4] for s in a] == [s[4] for s in b]
+    for x, y in zip(a, b):
+        assert x[1] is None or np.allclose(x[1], y[1])
+        if x[4] in ("settle 2b", "turn head", "hold head 2") or (x[4] == "wait" and x[2] == "head_light" and y[2] == "head"):
+            assert (x[2], y[2]) == ("head_light", "head"), x[4]
+        else:
+            assert x[2] == y[2], x[4]
+
+
+def test_a_strap_dragged_back_through_the_brake_can_come_forward_again():
+    """Round 37 (job 121): the brake's mark follows a strap that is dragged back through it, and letting go starts the
+    best pull afresh, so the next 0.4 mm forward frees the pawl and the brake does not come straight back on."""
+    import labkit
+
+    labkit._SPECS["tie"] = M.TIE
+    try:
+        M._new_trial()
+        M.set_ratchet("latch")
+        at = M.RATCHET["latch_at"]
+        s = dataclasses.replace(labkit.start_state(M.TIE), pawl_angle=math.radians(56.0))  # the pawl on the strap
+        M._ratchet(None, s, 0.0)
+        M._ratchet(None, s, at + 0.016)  # 24 mm out: latched
+        M._ratchet(None, s, at + 0.0157)  # backs out 0.3 mm: the brake
+        assert M.SEEN["latched"] and M.SEEN["brake_on"] and M.SEEN["brakes"] == 1
+        first = M.SEEN["brake_at"]
+        assert first == pytest.approx(math.radians(56.0 + L.BRAKE_DEG)) and L.BRAKE_SEAT <= 56.0
+        for through in (at + 0.010, at + 0.006):  # dragged 10 mm back through it
+            M._ratchet(None, s, through)
+        assert M.SEEN["brake_on"] and M.SEEN["brake_s"] == pytest.approx(at + 0.006)
+        # still backing out, the brake has closed further each time (round 45), never past the pawl's own stop
+        assert M.SEEN["brake_at"] == pytest.approx(first + 2 * math.radians(L.BRAKE_MORE)) and M.SEEN["brake_at"] <= L.PAWL_REST
+        M._ratchet(None, s, at + 0.0062)  # 0.2 mm forward: still held
+        assert M.SEEN["brake_on"]
+        M._ratchet(None, s, at + 0.0066)  # 0.6 mm forward: let go
+        assert not M.SEEN["brake_on"] and M.SEEN["releases"] == 1
+        M._ratchet(None, s, at + 0.0080)  # on forward: free, no new brake
+        assert not M.SEEN["brake_on"] and M.SEEN["brakes"] == 1
+        M._ratchet(None, s, at + 0.0077)  # backs out 0.3 mm from there: the brake again
+        assert M.SEEN["brake_on"] and M.SEEN["brakes"] == 2 and M.SEEN["latched"]
+    finally:
+        labkit._HELD.clear()
+        labkit._SPECS.pop("tie", None)
+        M.set_ratchet(os.environ.get("TIE_RATCHET", "latch"))
+        M._new_trial()
+
+
+# -- round 40: the left holds the head for the draw ----------------------------------------------------------------------
+def _spans(steps):
+    out, t = {}, 0.0
+    for sec, *_rest, label in steps:
+        if label != "wait":
+            out.setdefault(label, (t, t + sec))
+        t += sec
+    return out
+
+
+def test_the_held_draw_changes_hands_carries_the_head_to_the_cords_and_draws_along_the_slot():
+    from yam_arena.demo import ArmPlan
+
+    tr = L.trial("h37-hold")
+    b = L.BUILDS[tr.build]
+    plan = L.trial_plan(tr)
+    ls, rs = ({s[4]: s for s in plan[arm]} for arm in ("left", "right"))
+    lt, rt = _spans(plan["left"]), _spans(plan["right"])
+    r1 = L.RY_ROLL @ L.hang_pick(b)[1]
+    o = L.hang_pick(b)[2]
+    # the hands change over one at a time: the tie is never let go of
+    assert rt["take stub"][1] <= lt["let go tail 3"][0] + 1e-9  # the right has the stub before the left lets go
+    assert lt["take head 2"][1] <= rt["let go stub 1"][0] + 1e-9  # the left has the head before the right lets go
+    assert rt["back off stub 1"][1] <= lt["carry head"][0] + 1e-9  # the right is off before the head is carried
+    assert lt["carry head"][1] <= rt["take stub 2"][0] + 1e-9  # the head is at the cords before the right takes the tail
+    assert rt["let go stub"][0] <= lt["let go head 2"][0] + 1e-9 <= rt["back off stub"][1] + 1e-9
+    # the left's hold: level, pointing the strap's way out of the head, its pads flush with the exit face
+    rot = ls["take head 2"][3]
+    assert abs(rot[:, 2][2]) < 1e-9 and abs(abs(rot[:, 0][2]) - 1.0) < 1e-9  # level, its fingers above and below
+    head = np.asarray(ls["take head 2"][1]) + rot @ L.HOLD_O
+    pad_mid = np.asarray(ls["take head 2"][1]) + rot[:, 2] * 0.011
+    across = float((head - pad_mid) @ rot[:, 1])
+    assert across == pytest.approx(-(0.0137 - L.HEAD[2] / 2 - L.HOLD_PAST), abs=1e-9) and 0.004 <= L.HOLD_PAST <= 0.008
+    # (the head 6 mm in from the pads' edge on the exit side: on their flat, short of the right's pads on the tail)
+    assert ls["take head 2"][2] == tr.head_fingers and ls["onto the head"][2] == "head_open"
+    # by the cords: the strap's way out of the head at the wall, the way through toward the right (-y), the head as
+    # near the cords as a tie hugging them has it, and nothing of the left's pads in the cords
+    tight = L.hang_tight(tr, b, L.TOP + tr.h_low)
+    deg = tr.h_tight[2]
+    assert L.heading_xy(tight["rot"][:, 0]) == pytest.approx(deg) and L.heading_xy(tight["d"]) == pytest.approx(deg - 90.0)
+    assert 5.0 <= deg <= 15.0  # turned toward the cords: the loose loop comes into the mouth on the slot's near side
+    lc = ls["at the cords"][3]
+    assert np.allclose(np.asarray(ls["at the cords"][1]) + lc @ L.HOLD_O, tight["head"], atol=1e-9)
+    assert np.allclose(lc, L.rot_z(deg) @ r1) and deg + 11.0 <= tr.h_square_max  # room to square a head 11 degrees off
+    cords = np.array([[c.xy[0], c.xy[1], tight["head"][2] + dz] for c in L.CORDS for dz in (-0.01, 0.0, 0.01)])
+    radius = max(c.diameter for c in L.CORDS) / 2
+    for hand in (deg, tr.h_square_max):  # nothing of the left's fingers in the cords, however far its wrist squares
+        rot = L.rot_z(hand) @ r1
+        assert min(L.box_distance(cords, bx) for bx in L.finger_boxes(tight["head"] - rot @ L.HOLD_O, rot, L.HEAD[1])) - radius >= 0.003
+    root = tight["head"] + tight["rot"] @ L.ROOT
+    for c in L.CORDS:  # the strap's way out of the head passes the cords (3 mm and more off them), the head clear too
+        v = np.array([c.xy[0] - root[0], c.xy[1] - root[1]])
+        off = abs(float(v[0] * tight["rot"][1, 0] - v[1] * tight["rot"][0, 0])) - c.diameter / 2 - L.T / 2
+        assert off >= 0.003 and np.linalg.norm(np.array(c.xy) - tight["head"][:2]) - c.diameter / 2 >= L.HEAD[0] / 2 + 0.001
+    assert [lab for lab in ("carry head", "set head", "square head", "at the cords") if lab in ls] == [
+        "carry head", "set head", "square head", "at the cords"] and lt["square head"][1] <= rt["take stub 2"][0] + 1e-9
+    # the right's second take: the tail below the exit, then the draw along the way through
+    stub = np.asarray(rs["take stub 2"][1]) + rs["take stub 2"][3] @ o
+    assert np.allclose(stub, tight["exit"] + tight["d"] * tr.h_stub_at, atol=1e-9)
+    drawn = np.asarray(rs["pull"][1]) + rs["pull"][3] @ o
+    assert np.allclose(drawn - stub, tight["d"] * tr.h_pull, atol=1e-9)
+    assert L.heading_xy(rs["take stub 2"][3][:, 2]) == pytest.approx(tr.h_stub_yaw) and L.heading_xy(rs["pull"][3][:, 2]) == pytest.approx(tr.h_pull_yaw)
+    # end on to the tail, the right's fingers end short of the left's on the head (bounding boxes, both ways the
+    # left's wrist may have squared the head)
+    for hand in (tr.h_tight[2], tr.h_tight[2] + 11.0):
+        lrot = L.rot_z(hand) @ r1
+        left_boxes = L.finger_boxes(tight["head"] - lrot @ L.HOLD_O, lrot, L.HEAD[1])
+        for c, rr, h in L.finger_boxes(rs["take stub 2"][1], rs["take stub 2"][3], L.W):
+            pts = np.array([c + rr @ (np.array(sg) * h) for sg in itertools.product((-1, -0.5, 0, 0.5, 1), repeat=3)])
+            assert min(L.box_distance(pts, lb) for lb in left_boxes) >= 0.004
+    assert tr.h_stub_at + tr.h_pull >= L.lift_marks(b.tie_l)[0] + 0.004  # far enough for the full mark
+    assert tr.h_out + 0.006 + L.HEAD[2] <= tr.h_gft - 0.0137 - 0.005  # the left's pads stop short of the entry
+    # within reach all the way
+    arms = {arm: ArmPlan(ws, BASES[arm]) for arm, ws in M.plan_waypoints(plan).items()}
+    for k in range(1, int(L.plan_seconds(plan) * M.CONTROL_HZ) + 1):
+        for a in arms.values():
+            a.action7(k / M.CONTROL_HZ)
+    assert max(a.worst_ik_mm for a in arms.values()) < 1.0 and max(a.worst_ik_deg for a in arms.values()) < 1.0
+    assert L.plan_seconds(plan) * M.CONTROL_HZ < 2400
+
+
+@pytest.mark.parametrize("gain, stall, why", [(1.0, None, "mark"), (1.0, 0.120, "tight"), (0.0, None, "stuck"),
+                                              (1.0, 0.250, "time")])
+def test_the_held_draw_closed_loop_takes_the_head_where_it_is_and_stops_the_draw(gain, stall, why):
+    tr = L.trial("h37-hold")
+    b = L.BUILDS[tr.build]
+    plan = M.demo_plan(tr)
+    try:
+        st = M.DEMO["steering"]
+        when = {arm: {} for arm in plan}
+        for arm, ws in plan.items():
+            t = 0.0
+            for w in ws:
+                when[arm].setdefault(w.label, t)
+                t += w.duration
+        wp = lambda arm, label: next(w for w in plan[arm] if w.label == label)  # noqa: E731
+        step = lambda t: int(round(t * M.CONTROL_HZ)) // L.STEER_EVERY * L.STEER_EVERY  # noqa: E731
+        o = L.hang_pick(b)[2]
+        # the head 12 mm from where the plan has it, its strap's way out 8 degrees round
+        base = np.asarray(wp("left", "take head 2").pos) + np.asarray(wp("left", "take head 2").rot) @ L.HOLD_O
+        root0 = L.heading_xy(np.asarray(wp("left", "take head 2").rot)[:, 2])
+        head = base + np.array([0.010, -0.006, 0.003])
+        hr = L.rot_z(root0 + 8.0 - 90.0) @ L.RY_ROLL @ np.asarray(b.head_rot, float)
+        poly = np.array([head + hr @ L.ROOT + hr[:, 0] * k * L.LINK for k in range(b.n_links + 1)])
+        tie = _Tie(head, L.matrix_to_quat_xyzw(hr), poly)
+        st.update(step(when["left"]["to the head 2"] + 0.5), 0.034, np.zeros(3), state=tie)
+        w = wp("left", "take head 2")
+        assert np.allclose(np.asarray(w.pos) + np.asarray(w.rot) @ L.HOLD_O, head, atol=1e-6)
+        assert L.heading_xy(np.asarray(w.rot)[:, 2]) == pytest.approx(root0 + 8.0, abs=1e-6)
+        pre = wp("left", "to the head 2")
+        assert np.allclose(np.asarray(w.pos) - np.asarray(pre.pos), 0.045 * np.asarray(w.rot)[:, 2], atol=1e-6)
+        # the head 3 mm further along the fingers than planned: the carry puts the head, not the hand, at its place
+        slid = np.asarray(w.rot) @ np.array([0.0, 0.0, 0.003])
+        M.SEEN["tcp"] = {"left": np.asarray(w.pos) - slid, "right": np.zeros(3)}
+        st.update(step(when["left"]["hold head 3"] + 0.2), 0.034, np.zeros(3), state=tie)
+        tight = L.hang_tight(tr, b, L.TOP + tr.h_low)
+        c = wp("left", "at the cords")
+        assert np.allclose(np.asarray(c.pos) + np.asarray(c.rot) @ (L.HOLD_O + [0.0, 0.0, 0.003]), tight["head"], atol=1e-6)
+        # at the cords the head has turned 11 degrees in the fingers: the wrist turns by that, about the head's place
+        off = _Tie(tight["head"], L.matrix_to_quat_xyzw(L.rot_z(-11.0) @ tight["rot"]), poly)
+        st.update(step(when["left"]["set head"] + 0.2), 0.034, np.zeros(3), state=off)
+        c = wp("left", "at the cords")
+        assert L.heading_xy(np.asarray(c.rot)[:, 2]) == pytest.approx(tr.h_tight[2] + 11.0, abs=1e-6)
+        assert np.allclose(np.asarray(c.pos) + np.asarray(c.rot) @ (L.HOLD_O + [0.0, 0.0, 0.003]), tight["head"], atol=1e-6)
+        assert np.allclose(wp("left", "set head").rot, L.rot_z(tr.h_tight[2]) @ L.RY_ROLL @ L.hang_pick(b)[1])
+        assert st.reads["square"] == {"root_deg": pytest.approx(tr.h_tight[2] - 11.0), "hand_deg": pytest.approx(tr.h_tight[2]),
+                                      "hand_to_deg": pytest.approx(tr.h_tight[2] + 11.0)}
+        # at the cords, the head 2 mm and 5 degrees off: the second take and the draw follow the real exit and slot
+        hr2 = L.rot_z(5.0) @ tight["rot"]
+        head2 = tight["head"] + np.array([-0.002, 0.001, 0.0])
+        tie2 = _Tie(head2, L.matrix_to_quat_xyzw(hr2), poly)
+        st.update(step(when["right"]["to the stub 2"] + 0.5), 0.028, np.zeros(3), state=tie2)
+        d = hr2 @ np.array([0.0, 0.0, -1.0])
+        take = wp("right", "take stub 2")
+        assert np.allclose(np.asarray(take.pos) + np.asarray(take.rot) @ o,
+                           head2 + hr2 @ np.array([L.SLOT_C, 0.0, L.EXIT_Z]) + d * tr.h_stub_at, atol=1e-6)
+        grip0 = np.asarray(take.pos, float) + np.asarray(take.rot) @ o  # the strap's point in the right's fingers
+        end = np.asarray(wp("right", "pull").pos, float) + np.asarray(wp("right", "pull").rot) @ o
+        assert np.allclose(end - grip0, d * tr.h_pull, atol=1e-6)
+        assert L.heading_xy(np.asarray(take.rot)[:, 2]) == pytest.approx(tr.h_stub_yaw)  # end on to the tail
+        # the draw: the tail follows the hand (or stalls, or never moves)
+        t0, dur = when["right"]["pull"], wp("right", "pull").duration
+        full = L.lift_marks(b.tie_l)[0]
+        start = grip0.copy()
+        M.SEEN["tcp"] = None  # no reading of the hand's real place: it eases back from where the draw stopped
+        stopped, hand, sides = None, 0.0, []
+        for k in range(step(t0), step(t0 + dur + 0.5) + 1):
+            through = 0.028 + gain * hand if stall is None else min(0.028 + gain * hand, stall)
+            st.update(k, through, np.zeros(3), state=tie2)
+            assert np.allclose(wp("right", "pull").pos, wp("right", "take stub 2").pos)  # both ends of the blend: the
+            assert np.allclose(wp("right", "pull").rot, wp("right", "take stub 2").rot)  # hand is there
+            at = np.asarray(wp("right", "pull").pos, float) + np.asarray(wp("right", "pull").rot) @ o  # the grip's place
+            yaw = L.heading_xy(np.asarray(wp("right", "pull").rot)[:, 2])
+            assert yaw == pytest.approx(tr.h_stub_yaw + (tr.h_pull_yaw - tr.h_stub_yaw) * min(max(hand, 0.0) / L.HOLD_TURN, 1.0),
+                                        abs=1.5) or st.why  # it turns from end on to its drawing yaw over HOLD_TURN
+            hand = float((at - start) @ d)
+            sides.append(float((at - start) @ np.array([-d[1], d[0], 0.0])))
+            if stopped is None and st.why:
+                stopped = (hand, through)
+        assert st.why == why and stopped is not None
+        hold_tcp = np.asarray(wp("right", "pull hold").pos, float)
+        hold = hold_tcp + np.asarray(wp("right", "pull hold").rot) @ o
+        gone = float(np.linalg.norm(hold - start))
+        assert stopped[0] - L.HOLD_EASE - 0.004 <= gone <= stopped[0] + 0.004 and abs(sides[-1]) < 1e-9
+        if why != "time":  # stopped before its time was up, it has eased back along the draw since (round 46)
+            assert gone < stopped[0] - 0.002
+        if why == "mark":
+            assert full + st.HELD_PAST <= stopped[1] <= full + st.HELD_PAST + 0.004 and max(abs(v) for v in sides) < 1e-9
+        elif why == "tight":
+            assert stopped[1] == pytest.approx(stall) and (stall - 0.028) / gain - L.HOLD_EASE <= gone <= (stall - 0.028) / gain + st.TIGHT + 0.004
+            reach = math.tan(math.radians(st.WORK_DEG)) * (tr.h_stub_at + stall - 0.028)
+            assert max(sides) == pytest.approx(min(reach, 0.025), abs=0.002) and min(sides) == pytest.approx(-min(reach, 0.025), abs=0.002)
+        elif why == "time":  # it stalled too late to be worked for long: the draw ends on its line when its time is up
+            assert stopped[1] == pytest.approx(stall) and max(sides) > 0.02
+        else:
+            assert gone <= st.TIGHT + 0.004 and max(sides) == pytest.approx(0.006, abs=0.001)  # worked, never drawn
+        assert np.allclose(np.asarray(wp("right", "back off stub").pos) - hold_tcp, (0.0, 0.0, 0.04), atol=1e-9)
+    finally:
+        M.stop_demo()
+        M._new_trial()
+
+
+def test_a_tie_whose_free_head_has_cocked_on_a_tight_loop_still_reads_as_threaded():
+    """Round 48 (job 133): the strap comes into the mouth on a slant, the chord between two joints crossing the
+    entry's plane outside the passage's window; with the tail out of the exit that crossing is still its way in."""
+    hr = np.eye(3)
+    hc = np.array([0.37, -0.01, L.TOP + 0.13])
+    root = hc + hr @ L.ROOT
+    # from the root round a small loop on the entry side, in over the head's root-side corner, out of the exit
+    ring = [root + np.array([0.006, 0.0, 0.004]), hc + np.array([0.014, 0.0, 0.012]), hc + np.array([0.020, 0.0, 0.020]),
+            hc + np.array([0.012, 0.0, 0.026]), hc + np.array([0.006, 0.0, 0.016]), hc + np.array([0.00527, 0.0, 0.00332]),
+            hc + np.array([0.00072, 0.0, -0.00103]), hc + np.array([L.SLOT_C, 0.0, L.EXIT_Z - 0.001])]
+    poly = np.vstack([root, *ring, ring[-1] + np.array([0.0, 0.0, -0.29])])
+    th = L.threading(poly, hc, L.matrix_to_quat_xyzw(hr))
+    assert th.entered and th.through == pytest.approx(0.291, abs=5e-4) and th.loop is not None
+    strict = [c for c in L._crossings(L.to_head(poly, hc, L.matrix_to_quat_xyzw(hr)), L.ENTRY_Z) if L._in_passage(c[2])]
+    assert not strict  # the passage's own window misses it
+    # with no tail out of the exit the wide reading is not used: a strap lying across the head's face is not threaded
+    short = poly[:-3]
+    assert not L.threading(short, hc, L.matrix_to_quat_xyzw(hr)).entered
